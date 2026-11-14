@@ -1,6 +1,6 @@
 // Runs the mod's own hooks with a stand-in engine and writes every sample card
 // as a grid of styled cells (JSON), for paint.py to turn into images.
-// usage: bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic render.ts ../hooks/register.tsx 110 cards.json
+// usage: bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic render.ts ../hooks/register.tsx 110 cards.json ./samples.en.ts
 
 const g = globalThis as any
 g.h = (type: any, props: any, ...children: any[]) => ({
@@ -153,7 +153,7 @@ const mod = await import(process.argv[2]!)
 mod.register(on)
 const $ = { ui: { resolve: () => ({ Box: 'Box', Text: 'Text' }) } }
 const columns = Number(process.argv[3] ?? 110)
-const samples: Record<string, any[]> = (await import('./samples.ts')).samples
+const samples: Record<string, any[]> = (await import(process.argv[5] ?? './samples.en.ts')).samples
 const render = hooks.find(hook => hook.event === 'ui.render' && hook.matcher?.component === 'ToolUse')!.fn
 const out: any[] = []
 for (const [name, inputs] of Object.entries(samples)) {

@@ -1,12 +1,12 @@
 # sketch
 
+English | [繁體中文](README.zh-TW.md)
+
 **Claude Code answers with pictures instead of paragraphs.**
 
 `sketch` is a Claude Code mod (plugin). It gives Claude 13 drawing tools and one standing instruction: when an answer has a shape, draw the shape. Architecture, flows, roadmaps, user journeys, wireframes and charts appear as cards in the transcript, in your terminal, in your theme's colors.
 
-讓 Claude Code 用圖回答，不再是一大段文字。裝上後 Claude 多了 13 種繪圖工具，遇到架構、流程、路線圖、使用者旅程、線框圖、數據，會直接在終端機畫成卡片。中日韓文字寬度已處理，可直接用中文。
-
-![A layered architecture card](docs/images/layers.png)
+![A layered architecture card](docs/images/en/layers.png)
 
 ## Install
 
@@ -46,73 +46,73 @@ Then just ask as usual: "how is this service put together?", "compare these thre
 | `cards` | Titled cards with tags and quotes | Personas, research findings, principles |
 | `compare` | Options side by side, then a pick dialog | Decisions between two to four options |
 
-The cards below are drawn from the made-up inputs in [`preview/samples.ts`](preview/samples.ts).
+The cards below are drawn from the made-up inputs in [`preview/samples.en.ts`](preview/samples.en.ts). Labels can be in any language; Chinese, Japanese and Korean text is measured correctly (see the [繁體中文 README](README.zh-TW.md) for the same cards in Chinese).
 
 ## Architecture and structure
 
 `layers` shows what a system is made of. `diagram` shows how it connects: wires leaving a node travel together in that node's color, loops are drawn with an upward arrow, and a node's shape says what it is (decision, store, external system).
 
-![System wiring](docs/images/diagram.png)
+![System wiring](docs/images/en/diagram.png)
 
 | Flowchart | Dependencies |
 | --- | --- |
-| ![Flowchart with decisions](docs/images/diagram-flow-1.png) | ![Dependency graph](docs/images/diagram-flow-2.png) |
+| ![Flowchart with decisions](docs/images/en/diagram-flow-1.png) | ![Dependency graph](docs/images/en/diagram-flow-2.png) |
 
 When dependencies are too dense for wires, `layout: "matrix"` draws who uses whom as a grid, with counts:
 
-![Dependency matrix](docs/images/diagram-flow-matrix.png)
+![Dependency matrix](docs/images/en/diagram-flow-matrix.png)
 
-![Sequence diagram](docs/images/sequence.png)
+![Sequence diagram](docs/images/en/sequence.png)
 
 | Outline | Mind map |
 | --- | --- |
-| ![Tree](docs/images/tree.png) | ![Mind map](docs/images/tree-mind.png) |
+| ![Tree](docs/images/en/tree.png) | ![Mind map](docs/images/en/tree-mind.png) |
 
 ## Product and planning
 
-![Roadmap](docs/images/timeline.png)
+![Roadmap](docs/images/en/timeline.png)
 
-![Kanban board](docs/images/board.png)
+![Kanban board](docs/images/en/board.png)
 
-![Prioritisation on two axes](docs/images/quadrant-1.png)
+![Prioritisation on two axes](docs/images/en/quadrant-1.png)
 
-![SWOT](docs/images/quadrant-2.png)
+![SWOT](docs/images/en/quadrant-2.png)
 
 `compare` draws the options, then opens a dialog under the cards so you pick with the arrow keys; Claude carries on with your choice.
 
-![Options compared](docs/images/compare.png)
+![Options compared](docs/images/en/compare.png)
 
 ## Design and research
 
-![User journey](docs/images/journey.png)
+![User journey](docs/images/en/journey.png)
 
-![Wireframe](docs/images/wireframe-1.png)
+![Wireframe](docs/images/en/wireframe-1.png)
 
-![Mobile wireframe](docs/images/wireframe-2.png)
+![Mobile wireframe](docs/images/en/wireframe-2.png)
 
-![Research findings and a persona](docs/images/cards.png)
+![Research findings and a persona](docs/images/en/cards.png)
 
 ## Numbers
 
-![Metric tiles](docs/images/metrics.png)
+![Metric tiles](docs/images/en/metrics.png)
 
-![Line chart](docs/images/chart-line.png)
+![Line chart](docs/images/en/chart-line.png)
 
-![Scatter chart with trend line](docs/images/chart-scatter.png)
+![Scatter chart with trend line](docs/images/en/chart-scatter.png)
 
-![Bar chart](docs/images/chart-bar.png)
+![Bar chart](docs/images/en/chart-bar.png)
 
-![Column chart](docs/images/chart-column.png)
+![Column chart](docs/images/en/chart-column.png)
 
-![Stacked bars](docs/images/chart-stacked.png)
+![Stacked bars](docs/images/en/chart-stacked.png)
 
-![Histogram](docs/images/chart-histogram.png)
+![Histogram](docs/images/en/chart-histogram.png)
 
-![Funnel](docs/images/chart-funnel.png)
+![Funnel](docs/images/en/chart-funnel.png)
 
-![Heatmap](docs/images/chart-heatmap.png)
+![Heatmap](docs/images/en/chart-heatmap.png)
 
-![Share of a whole](docs/images/chart-share.png)
+![Share of a whole](docs/images/en/chart-share.png)
 
 ## How it works
 
@@ -135,12 +135,12 @@ Things to know:
 
 The images in this README are not window screenshots. They are produced by the scripts in [`preview/`](preview): `render.ts` runs the mod's real hooks against a stand-in engine with a small flex layout of its own, and `paint.py` paints the resulting cells with the default dark theme's colors. Layout in your terminal comes from Claude Code's own engine and your theme, so spacing and colors can differ slightly.
 
-To regenerate them (macOS, needs [Bun](https://bun.sh) and Python with Pillow):
+To regenerate them (macOS, needs [Bun](https://bun.sh) and Python with Pillow; use `samples.zh-TW.ts` and `docs/images/zh-TW` for the Chinese set):
 
 ```
 cd preview
-bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic render.ts ../hooks/register.tsx 110 cards.json
-python3 paint.py cards.json ../docs/images
+bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic render.ts ../hooks/register.tsx 110 cards.json ./samples.en.ts
+python3 paint.py cards.json ../docs/images/en
 ```
 
 ## Develop
