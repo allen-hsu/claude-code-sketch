@@ -1,0 +1,10 @@
+{
+  "name": "sketch",
+  "version": "0.1.0",
+  "description": "Claude draws diagrams, charts, roadmaps, journeys and wireframes as cards in the transcript instead of writing paragraphs",
+  "author": { "name": "allen-hsu" },
+  "license": "MIT",
+  "homepage": "https://github.com/allen-hsu/claude-code-sketch",
+  "repository": "https://github.com/allen-hsu/claude-code-sketch",
+  "keywords": ["visualization", "diagram", "chart", "architecture", "terminal"]
+}
