@@ -43,7 +43,12 @@ const items = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
 const words = (value: unknown, max: number): string | undefined => {
   const text = typeof value === 'number' ? String(value) : value
   if (typeof text !== 'string') return undefined
-  const trimmed = text.replace(/\s+/g, ' ').trim()
+  // The text comes from the model, which may be relaying something it read:
+  // control characters and direction overrides never reach the terminal.
+  const trimmed = text
+    .replace(/\s+/g, ' ')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '')
+    .trim()
   if (trimmed === '') return undefined
 
   return trimmed.length > max ? `${trimmed.slice(0, max - 1)}…` : trimmed
