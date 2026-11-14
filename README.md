@@ -13,6 +13,7 @@ English | [繁體中文](README.zh-TW.md)
 At the prompt of a Claude Code terminal session:
 
 ```
+/plugin marketplace add allen-hsu/claude-code-sketch
 /plugin install sketch --marketplace allen-hsu/claude-code-sketch
 ```
 
