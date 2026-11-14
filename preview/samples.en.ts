@@ -261,6 +261,132 @@ export const samples: Record<string, any[]> = {
       },
     },
   ],
+  'schema#er': [
+    {
+      title: 'Order data model',
+      entities: [
+        { name: 'users', fields: [{ name: 'id', type: 'uuid', key: 'pk' }, { name: 'email', type: 'text' }, { name: 'created_at', type: 'timestamp' }] },
+        { name: 'orders', fields: [{ name: 'id', type: 'uuid', key: 'pk' }, { name: 'user_id', type: 'uuid', key: 'fk' }, { name: 'status', type: 'enum' }, { name: 'total', type: 'numeric' }] },
+        { name: 'order_items', fields: [{ name: 'order_id', type: 'uuid', key: 'fk' }, { name: 'product_id', type: 'uuid', key: 'fk' }, { name: 'quantity', type: 'int' }] },
+        { name: 'products', fields: [{ name: 'id', type: 'uuid', key: 'pk' }, { name: 'name', type: 'text' }, { name: 'price', type: 'numeric' }] },
+      ],
+      relations: [
+        { from: 'users', to: 'orders', kind: '1:N' },
+        { from: 'orders', to: 'order_items', kind: '1:N' },
+        { from: 'products', to: 'order_items', kind: '1:N' },
+      ],
+    },
+  ],
+  'schema#class': [
+    {
+      title: 'Payment classes',
+      entities: [
+        { name: 'PaymentService', fields: ['charge(order)', 'refund(payment)'] },
+        { name: 'PaymentProvider', note: 'interface', fields: ['authorize(amount)', 'capture(id)', 'refund(id)'] },
+        { name: 'StripeProvider', fields: ['apiKey', 'webhookSecret'] },
+        { name: 'PaypalProvider', fields: ['clientId', 'sandbox'] },
+      ],
+      relations: [
+        { from: 'PaymentService', to: 'PaymentProvider', kind: 'uses' },
+        { from: 'PaymentProvider', to: 'StripeProvider', kind: 'implemented by' },
+        { from: 'PaymentProvider', to: 'PaypalProvider', kind: 'implemented by' },
+      ],
+    },
+  ],
+  swimlane: [
+    {
+      title: 'Refund process',
+      lanes: ['Customer', 'Support', 'Finance', 'Provider'],
+      steps: [
+        { label: 'Asks for refund', lane: 'Customer' },
+        { label: 'Checks order', lane: 'Support' },
+        { label: 'Approves', lane: 'Finance' },
+        { label: 'Sends money', lane: 'Provider' },
+        { label: 'Confirms', lane: 'Support' },
+        { label: 'Gets refund', lane: 'Customer' },
+      ],
+    },
+  ],
+  pipeline: [
+    {
+      title: 'Release pipeline',
+      stages: [
+        { name: 'Build', jobs: [{ label: 'Lint', status: 'done' }, { label: 'Compile', status: 'done' }, { label: 'Unit tests', status: 'done' }] },
+        { name: 'Test', jobs: [{ label: 'Integration', status: 'done' }, { label: 'End to end', status: 'doing' }] },
+        { name: 'Package', jobs: [{ label: 'Docker image', status: 'todo' }] },
+        { name: 'Deploy', jobs: [{ label: 'Staging', status: 'todo' }, { label: 'Production', status: 'todo' }] },
+      ],
+    },
+  ],
+  gitgraph: [
+    {
+      title: 'Release flow',
+      branches: [{ name: 'main' }, { name: 'develop' }, { name: 'feature/login', from: 'develop' }],
+      events: [
+        { branch: 'main', label: 'init', tag: 'v1.0' },
+        { branch: 'develop', label: 'setup' },
+        { branch: 'feature/login', label: 'form' },
+        { branch: 'develop', label: 'fix' },
+        { branch: 'feature/login', label: 'oauth' },
+        { branch: 'develop', label: 'merge', merge: 'feature/login' },
+        { branch: 'main', label: 'release', merge: 'develop', tag: 'v1.1' },
+      ],
+    },
+  ],
+  'diagram#zones': [
+    {
+      title: 'Container view with boundaries',
+      layout: 'zones',
+      nodes: [
+        { id: 'user', label: 'Shopper', shape: 'person', group: 'People' },
+        { id: 'web', label: 'Web app', group: 'Front end' },
+        { id: 'mobile', label: 'Mobile app', group: 'Front end' },
+        { id: 'api', label: 'API', group: 'Back end' },
+        { id: 'worker', label: 'Worker', group: 'Back end' },
+        { id: 'db', label: 'Postgres', shape: 'store', group: 'Data' },
+        { id: 'queue', label: 'Queue', shape: 'store', group: 'Data' },
+        { id: 'mail', label: 'Email provider', shape: 'external', group: 'Outside' },
+      ],
+      edges: [
+        { from: 'user', to: 'web' }, { from: 'user', to: 'mobile' }, { from: 'web', to: 'api', label: 'HTTPS' }, { from: 'mobile', to: 'api' },
+        { from: 'api', to: 'db' }, { from: 'api', to: 'queue' }, { from: 'queue', to: 'worker', label: 'jobs' }, { from: 'worker', to: 'mail' },
+      ],
+    },
+  ],
+  'diagram#state': [
+    {
+      title: 'Order states',
+      nodes: [
+        { id: 'new', label: 'Created', shape: 'round' },
+        { id: 'paid', label: 'Paid', shape: 'round' },
+        { id: 'ship', label: 'Shipped', shape: 'round' },
+        { id: 'done', label: 'Delivered', shape: 'round' },
+        { id: 'cancel', label: 'Cancelled', shape: 'round' },
+        { id: 'refund', label: 'Refunded', shape: 'round' },
+      ],
+      edges: [
+        { from: 'new', to: 'paid', label: 'pay' }, { from: 'new', to: 'cancel', label: 'timeout' }, { from: 'paid', to: 'ship', label: 'pack' },
+        { from: 'paid', to: 'cancel', label: 'cancel' }, { from: 'ship', to: 'ship', label: 'tracking' }, { from: 'ship', to: 'done', label: 'receive' },
+        { from: 'done', to: 'refund', label: 'return' },
+      ],
+    },
+  ],
+  'layers#topology': [
+    {
+      title: 'Deployment topology',
+      layers: [
+        { name: 'Edge', items: ['Route 53', 'CloudFront', 'WAF'] },
+        {
+          name: 'Region',
+          zones: [
+            { name: 'Zone A', zones: [{ name: 'Public subnet', items: ['ALB', 'NAT'] }, { name: 'Private subnet', items: ['API', 'Worker'] }] },
+            { name: 'Zone B', zones: [{ name: 'Public subnet', items: ['ALB', 'NAT'] }, { name: 'Private subnet', items: ['API', 'Worker'] }] },
+          ],
+        },
+        { name: 'Managed', items: ['RDS', 'ElastiCache', 'S3', 'SQS'] },
+      ],
+    },
+  ],
   compare: [
     {
       question: 'Which database?',

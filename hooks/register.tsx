@@ -4,6 +4,10 @@ import type { Register } from 'claude-code'
 // the transcript, from the call's own input:
 //   layers     the block picture of an architecture: bands, zones, side concerns
 //   diagram    nodes and arrows laid out in ranks (wiring, flows, dependencies)
+//   schema     tables or classes: boxes with fields, and their relations
+//   swimlane   a process across lanes of roles or systems
+//   pipeline   stages left to right, each a column of jobs
+//   gitgraph   branches, commits, merges and tags over time
 //   sequence   who calls whom, in order
 //   tree       a hierarchy
 //   timeline   bars over periods (roadmap, gantt)
@@ -367,13 +371,24 @@ const frameOf = (ui: UI, title: string, body: any): any => (
 
 // ---------------------------------------------------------------- diagram
 
-const SHAPES = ['box', 'round', 'decision', 'store', 'external'] as const
+const SHAPES = ['box', 'round', 'decision', 'store', 'external', 'person'] as const
 type Shape = (typeof SHAPES)[number]
-type GraphNode = { id: string; label: string; note?: string; group?: string; shape: Shape }
+// A line inside a node under its name: a field of a table, a member of a class.
+type BodyRow = { mark: string; text: string; aside?: string }
+type GraphNode = {
+  id: string
+  label: string
+  note?: string
+  group?: string
+  shape: Shape
+  rows: BodyRow[]
+  // Labels of the edges from the node to itself.
+  loops: string[]
+}
 type GraphEdge = { from: number; to: number; label?: string; isReversed: boolean }
 type Graph = {
   title: string
-  layout: 'flow' | 'matrix'
+  layout: 'flow' | 'matrix' | 'zones'
   nodes: GraphNode[]
   edges: GraphEdge[]
   notes: string[]
@@ -388,6 +403,7 @@ const FRAMES: Record<Shape, string[]> = {
   decision: [...'╱─╲│╲─╱┬┴'],
   store: [...'╔═╗║╚═╝╤╧'],
   external: [...'┌┄┐┆└┄┘┬┴'],
+  person: [...'╭─╮│╰─╯┬┴'],
 }
 
 const readGraph = (input: unknown): Graph | string => {
@@ -398,7 +414,7 @@ const readGraph = (input: unknown): Graph | string => {
     if (index.has(id) || nodes.length >= 28) return
     index.set(id, nodes.length)
     if (!index.has(label)) index.set(label, nodes.length)
-    nodes.push({ id, label, note, group, shape })
+    nodes.push({ id, label, note, group, shape, rows: [], loops: [] })
   }
   for (const one of items(raw.nodes)) {
     const node = typeof one === 'string' ? { label: one } : record(one)
@@ -424,7 +440,11 @@ const readGraph = (input: unknown): Graph | string => {
     const edge = record(one)
     const from = index.get(words(edge.from, 40) ?? '')
     const to = index.get(words(edge.to, 40) ?? '')
-    if (from === undefined || to === undefined || from === to || seen.has(`${from}>${to}`)) {
+    if (from !== undefined && from === to) {
+      nodes[from]?.loops.push(words(edge.label, 18) ?? '')
+      continue
+    }
+    if (from === undefined || to === undefined || seen.has(`${from}>${to}`)) {
       dropped++
       continue
     }
@@ -434,7 +454,7 @@ const readGraph = (input: unknown): Graph | string => {
 
   return {
     title: words(raw.title, 80) ?? 'Diagram',
-    layout: pick(raw.layout, ['flow', 'matrix'] as const, 'flow'),
+    layout: pick(raw.layout, ['flow', 'matrix', 'zones'] as const, 'flow'),
     nodes,
     edges,
     notes: wordList(raw.notes, 4, 120),
@@ -491,10 +511,15 @@ const layoutGraph = (graph: Graph, room: number) => {
   const topOf = (edge: GraphEdge): number => (edge.isReversed ? edge.to : edge.from)
   const bottomOf = (edge: GraphEdge): number => (edge.isReversed ? edge.from : edge.to)
 
+  // Zoned, each group is a band: nodes are ranked inside their own group and
+  // the bands are stacked in the order the groups first appear.
+  const isZoned = graph.layout === 'zones'
+  const zoneOf = (node: number): string => nodes[node]?.group ?? ''
   const rank = nodes.map(() => 0)
   for (let pass = 0; pass < nodes.length; pass++) {
     let isChanged = false
     for (const edge of edges) {
+      if (isZoned && zoneOf(edge.from) !== zoneOf(edge.to)) continue
       const above = rank[topOf(edge)] ?? 0
       if ((rank[bottomOf(edge)] ?? 0) < above + 1) {
         rank[bottomOf(edge)] = above + 1
@@ -502,6 +527,21 @@ const layoutGraph = (graph: Graph, room: number) => {
       }
     }
     if (!isChanged) break
+  }
+  const zones: string[] = []
+  if (isZoned) {
+    nodes.forEach((_, node) => {
+      if (!zones.includes(zoneOf(node))) zones.push(zoneOf(node))
+    })
+    let offset = 0
+    for (const zone of zones) {
+      const members = nodes.map((_, node) => node).filter(node => zoneOf(node) === zone)
+      const depth = Math.max(...members.map(node => rank[node] ?? 0)) + 1
+      for (const node of members) rank[node] = (rank[node] ?? 0) + offset
+      offset += depth
+    }
+    // Between bands an edge simply runs the way the bands are stacked.
+    for (const edge of edges) edge.isReversed = (rank[edge.from] ?? 0) > (rank[edge.to] ?? 0)
   }
 
   const ranks: Slot[][] = []
@@ -555,9 +595,16 @@ const layoutGraph = (graph: Graph, room: number) => {
   }
 
   const widest = Math.max(
-    ...nodes.map(node => Math.max(widthOf(node.label), node.note ? Math.min(widthOf(node.note), 20) : 0)),
+    ...nodes.map(node =>
+      Math.max(
+        widthOf(node.label) + (node.shape === 'person' ? 2 : 0),
+        node.note ? Math.min(widthOf(node.note), 20) : 0,
+        node.loops.length > 0 ? widthOf(node.loops.join(', ')) + 2 : 0,
+        ...node.rows.map(row => 2 + widthOf(row.text) + (row.aside ? widthOf(row.aside) + 2 : 0)),
+      ),
+    ),
   )
-  let nodeW = clamp(widest + 4, 10, 26)
+  let nodeW = clamp(widest + 4, 10, nodes.some(node => node.rows.length > 0) ? 38 : 26)
   let gap = 4
   const lineWidth = (line: Slot[]): number =>
     line.reduce((sum, slot) => sum + (slot.node === undefined ? 1 : nodeW), 0) + gap * Math.max(0, line.length - 1)
@@ -620,6 +667,12 @@ const layoutGraph = (graph: Graph, room: number) => {
     })
     width = packed
   }
+  if (isZoned) {
+    all.forEach(slot => {
+      slot.x += 2
+    })
+    width += 4
+  }
 
   const { colors, groups } = nodeColors(graph)
   const portOf = (slot: Slot, count: number, index: number): number =>
@@ -672,20 +725,40 @@ const layoutGraph = (graph: Graph, room: number) => {
     lanes[at] = ends.length
   }
 
-  const heights = ranks.map(line =>
-    line.some(slot => slot.node !== undefined && nodes[slot.node]?.note !== undefined) ? 4 : 3,
+  // A node is as tall as what it holds; plain nodes of one rank share a height.
+  const ownTall = (node: GraphNode | undefined): number =>
+    3 +
+    (node?.note !== undefined ? 1 : 0) +
+    (node && node.loops.length > 0 ? 1 : 0) +
+    (node && node.rows.length > 0 ? node.rows.length + 1 : 0)
+  const plain = ranks.map(line =>
+    Math.max(
+      3,
+      ...line
+        .filter(slot => slot.node !== undefined && nodes[slot.node]?.rows.length === 0)
+        .map(slot => ownTall(nodes[slot.node ?? -1])),
+    ),
+  )
+  const tallOf = (slot: Slot): number => {
+    const node = nodes[slot.node ?? -1]
+
+    return node && node.rows.length > 0 ? ownTall(node) : (plain[slot.rank] ?? 3)
+  }
+  const heights = ranks.map((line, at) =>
+    Math.max(plain[at] ?? 3, ...line.filter(slot => slot.node !== undefined).map(tallOf)),
   )
   const tops: number[] = []
-  let height = 0
+  let height = isZoned ? 1 : 0
   ranks.forEach((_, at) => {
     tops[at] = height
     height += (heights[at] ?? 3) + (at < ranks.length - 1 ? (lanes[at] ?? 0) + 2 : 0)
   })
+  if (isZoned) height += 1
   const canvas = makeCanvas(Math.max(width, Math.min(room, width + 20)), height)
 
   for (const slot of all) {
     const top = tops[slot.rank] ?? 0
-    const tall = heights[slot.rank] ?? 3
+    const tall = tallOf(slot)
     if (slot.node === undefined) continue
     const node = nodes[slot.node]
     const frame = FRAMES[node?.shape ?? 'box']
@@ -698,11 +771,24 @@ const layoutGraph = (graph: Graph, room: number) => {
       put(canvas, slot.x + slot.w - 1, y, frame[3] ?? '│', border)
     }
     put(canvas, slot.x, top + tall - 1, `${frame[4]}${(frame[5] ?? '─').repeat(inner)}${frame[6]}`, border)
-    const label = clip(node?.label ?? '', inner)
-    put(canvas, slot.x + 1 + ((inner - widthOf(label)) >> 1), top + 1, label, { bold: true })
-    if (tall === 4 && node?.note !== undefined) {
-      const note = clip(node.note, inner)
-      put(canvas, slot.x + 1 + ((inner - widthOf(note)) >> 1), top + 2, note, { dim: true })
+    const centred = (text: string, y: number, style: Style): void => {
+      const cut = clip(text, inner)
+      put(canvas, slot.x + 1 + ((inner - widthOf(cut)) >> 1), y, cut, style)
+    }
+    let line = top + 1
+    centred(node?.shape === 'person' ? `☺ ${node.label}` : (node?.label ?? ''), line++, { bold: true })
+    if (node?.note !== undefined) centred(node.note, line++, { dim: true })
+    if (node && node.loops.length > 0) centred(`↺ ${node.loops.filter(loop => loop !== '').join(', ')}`.trim(), line++, border)
+    if (node && node.rows.length > 0) {
+      put(canvas, slot.x, line++, `├${'─'.repeat(inner)}┤`, border)
+      for (const row of node.rows) {
+        put(canvas, slot.x + 1, line, row.mark, { color: 'warning' })
+        put(canvas, slot.x + 3, line, clip(row.text, inner - 3))
+        if (row.aside !== undefined && widthOf(row.text) + widthOf(row.aside) + 5 <= inner) {
+          put(canvas, slot.x + slot.w - 2 - widthOf(row.aside), line, row.aside, { dim: true })
+        }
+        line++
+      }
     }
   }
 
@@ -712,9 +798,13 @@ const layoutGraph = (graph: Graph, room: number) => {
   })
   // Longer spans first, so a short hop is drawn over a long haul it meets.
   const drawOrder = [...bundles].sort((a, b) => reachOf(b)[1] - reachOf(b)[0] - (reachOf(a)[1] - reachOf(a)[0]))
+  // A wire leaves from under its own node, which may end above the rank's last row.
+  const startOf = (bundle: Bundle): number =>
+    bundle.from.node === undefined ? rowsFor(bundle.from.rank).exit : (tops[bundle.from.rank] ?? 0) + tallOf(bundle.from)
   for (const bundle of drawOrder) {
     const { exit, arrow } = rowsFor(bundle.from.rank)
     const lane = exit + 1 + bundle.lane
+    const start = startOf(bundle)
     const layer = makeCanvas(canvas.w, canvas.h)
     const [left, right] = reachOf(bundle)
     // A wire through a rank it skips runs down the slot kept for it.
@@ -724,22 +814,23 @@ const layoutGraph = (graph: Graph, room: number) => {
         vline(layer, link.to.x, top - 1, top + (heights[link.to.rank] ?? 3))
       }
     }
-    if (left === right) vline(layer, bundle.sx, exit, arrow)
+    if (left === right) vline(layer, bundle.sx, start, arrow)
     else {
-      vline(layer, bundle.sx, exit, lane)
+      vline(layer, bundle.sx, start, lane)
       hline(layer, lane, left, right)
       for (const link of bundle.links) vline(layer, link.tx, lane, arrow)
     }
-    wire(layer, bundle.sx, exit, UP)
+    wire(layer, bundle.sx, start, UP)
     for (const link of bundle.links) wire(layer, link.tx, arrow, DOWN)
     stamp(canvas, layer, { color: bundle.color })
   }
   for (const bundle of bundles) {
-    const { exit, arrow } = rowsFor(bundle.from.rank)
+    const { arrow } = rowsFor(bundle.from.rank)
+    const start = startOf(bundle)
     if (bundle.from.node !== undefined) {
       const frame = FRAMES[nodes[bundle.from.node]?.shape ?? 'box']
-      put(canvas, bundle.sx, exit - 1, frame[7] ?? '┬', { color: colors[bundle.from.node] })
-      if (bundle.isReversed) put(canvas, bundle.sx, exit, '▲', { color: bundle.color, bold: true })
+      put(canvas, bundle.sx, start - 1, frame[7] ?? '┬', { color: colors[bundle.from.node] })
+      if (bundle.isReversed) put(canvas, bundle.sx, start, '▲', { color: bundle.color, bold: true })
     }
     for (const link of bundle.links) {
       if (link.to.node === undefined) continue
@@ -748,6 +839,28 @@ const layoutGraph = (graph: Graph, room: number) => {
         const frame = FRAMES[nodes[link.to.node]?.shape ?? 'box']
         put(canvas, link.tx, arrow + 1, frame[8] ?? '┴', { color: colors[link.to.node] })
       }
+    }
+  }
+
+  // A zone's frame goes round its nodes. Its name is written first, so the
+  // edge labels placed next keep clear of it.
+  const frames: { color: string; x0: number; x1: number; y0: number; y1: number }[] = []
+  if (isZoned) {
+    for (const zone of zones) {
+      const members = all.filter(slot => slot.node !== undefined && zoneOf(slot.node) === zone)
+      if (zone === '' || members.length === 0) continue
+      const color = colors[members[0]?.node ?? 0] ?? 'inactive'
+      const first = Math.min(...members.map(slot => slot.rank))
+      const last = Math.max(...members.map(slot => slot.rank))
+      const frame = {
+        color,
+        x0: Math.min(...members.map(slot => slot.x)) - 2,
+        x1: Math.max(...members.map(slot => slot.x + slot.w)) + 1,
+        y0: (tops[first] ?? 0) - 1,
+        y1: (tops[last] ?? 0) + (heights[last] ?? 3),
+      }
+      frames.push(frame)
+      put(canvas, frame.x0 + 2, frame.y0, clip(` ${zone} `, frame.x1 - frame.x0 - 3), { color, bold: true })
     }
   }
 
@@ -770,7 +883,29 @@ const layoutGraph = (graph: Graph, room: number) => {
     else loose.push(`${nodes[edge.from]?.label ?? ''} → ${nodes[edge.to]?.label ?? ''}: ${edge.label}`)
   }
 
-  return { rows: rowsOf(canvas), groups, loose, isTooWide: width > room }
+  // The frames go on last and only into empty cells, so wires and labels read
+  // as lying over them.
+  for (const frame of frames) {
+    const { color, x0, x1, y0, y1 } = frame
+    const edge = (x: number, y: number, char: string): void => {
+      const cell = cellAt(canvas, x, y)
+      if (cell && cell.ch === '' && cell.mask === 0) put(canvas, x, y, char, { color, dim: true })
+    }
+    for (let x = x0 + 1; x < x1; x++) {
+      edge(x, y0, '┄')
+      edge(x, y1, '┄')
+    }
+    for (let y = y0 + 1; y < y1; y++) {
+      edge(x0, y, '┆')
+      edge(x1, y, '┆')
+    }
+    edge(x0, y0, '┌')
+    edge(x1, y0, '┐')
+    edge(x0, y1, '└')
+    edge(x1, y1, '┘')
+  }
+
+  return { rows: rowsOf(canvas), groups: isZoned ? [] : groups, loose, isTooWide: width > room }
 }
 
 // Who depends on whom as a grid: clearer than wires once almost everything
@@ -834,7 +969,7 @@ const drawDiagram = (ui: UI, graph: Graph, room: number): any => {
 // components (plain, or gathered into named zones), with the concerns that cut
 // across every band standing beside them.
 
-type Zone = { name: string; items: string[] }
+type Zone = { name: string; items: string[]; zones: Zone[] }
 type Band = { name: string; items: string[]; zones: Zone[] }
 type Layers = { title: string; bands: Band[]; sides: Zone[]; notes: string[] }
 
@@ -846,11 +981,22 @@ const namesOf = (value: unknown, count: number): string[] =>
 
 const readLayers = (input: unknown): Layers | string => {
   const raw = record(input)
-  const zoneOf = (value: unknown): Zone | undefined => {
+  const zoneOf = (value: unknown, depth = 0): Zone | undefined => {
     const zone = typeof value === 'string' ? { name: value } : record(value)
     const name = words(zone.name, 24)
+    if (name === undefined) return undefined
 
-    return name === undefined ? undefined : { name, items: namesOf(zone.items, 10) }
+    return {
+      name,
+      items: namesOf(zone.items, 10),
+      zones:
+        depth >= 3
+          ? []
+          : items(zone.zones)
+              .map(one => zoneOf(one, depth + 1))
+              .filter((one): one is Zone => one !== undefined)
+              .slice(0, 5),
+    }
   }
   const bands: Band[] = []
   for (const one of items(raw.layers).slice(0, 8)) {
@@ -861,7 +1007,7 @@ const readLayers = (input: unknown): Layers | string => {
       name,
       items: namesOf(band.items, 12),
       zones: items(band.zones ?? band.groups)
-        .map(zoneOf)
+        .map(one => zoneOf(one))
         .filter((zone): zone is Zone => zone !== undefined)
         .slice(0, 5),
     })
@@ -872,7 +1018,7 @@ const readLayers = (input: unknown): Layers | string => {
     title: words(raw.title, 80) ?? 'Architecture',
     bands,
     sides: items(raw.sides)
-      .map(zoneOf)
+      .map(one => zoneOf(one))
       .filter((zone): zone is Zone => zone !== undefined)
       .slice(0, 3),
     notes: wordList(raw.notes, 4, 120),
@@ -893,6 +1039,20 @@ const drawLayers = (ui: UI, layers: Layers, room: number): any => {
     </ui.Box>
   )
 
+  const zoneBox = (zone: Zone, color: string): any => (
+    <ui.Box borderStyle="single" borderColor={color} borderDimColor flexDirection="column" paddingX={1}>
+      <ui.Text dimColor bold wrap="truncate-end">
+        {zone.name}
+      </ui.Text>
+      {zone.items.length > 0 && chips(zone.items, color)}
+      {zone.zones.length > 0 && (
+        <ui.Box flexDirection="row" flexWrap="wrap" columnGap={1}>
+          {zone.zones.map(inner => zoneBox(inner, color))}
+        </ui.Box>
+      )}
+    </ui.Box>
+  )
+
   return [
     <ui.Box flexDirection="row" columnGap={1}>
       <ui.Box flexDirection="column" width={mainW}>
@@ -910,14 +1070,7 @@ const drawLayers = (ui: UI, layers: Layers, room: number): any => {
                 {band.items.length > 0 && chips(band.items, color)}
                 {band.zones.length > 0 && (
                   <ui.Box flexDirection="row" flexWrap="wrap" columnGap={1}>
-                    {band.zones.map(zone => (
-                      <ui.Box borderStyle="single" borderColor={color} borderDimColor flexDirection="column" paddingX={1}>
-                        <ui.Text dimColor bold wrap="truncate-end">
-                          {zone.name}
-                        </ui.Text>
-                        {zone.items.length > 0 && chips(zone.items, color)}
-                      </ui.Box>
-                    ))}
+                    {band.zones.map(zone => zoneBox(zone, color))}
                   </ui.Box>
                 )}
               </ui.Box>
@@ -940,6 +1093,315 @@ const drawLayers = (ui: UI, layers: Layers, room: number): any => {
     </ui.Box>,
     ...notesOf(ui, layers.notes),
   ]
+}
+
+// ---------------------------------------------------------------- schema
+// Tables or classes: each a box with its fields under its name, laid out and
+// wired like any diagram.
+
+const readSchema = (input: unknown): Graph | string => {
+  const raw = record(input)
+  const nodes: GraphNode[] = []
+  const index = new Map<string, number>()
+  for (const one of items(raw.entities).slice(0, 14)) {
+    const entity = record(one)
+    const name = words(entity.name, 30)
+    if (name === undefined || index.has(name)) continue
+    index.set(name, nodes.length)
+    const rows: BodyRow[] = []
+    for (const each of items(entity.fields ?? entity.members).slice(0, 14)) {
+      const field = typeof each === 'string' ? { name: each } : record(each)
+      const text = words(field.name, 30)
+      if (text === undefined) continue
+      rows.push({ mark: field.key === 'pk' ? '◆' : field.key === 'fk' ? '◇' : ' ', text, aside: words(field.type, 16) })
+    }
+    nodes.push({ id: name, label: name, note: words(entity.note, 30), group: words(entity.group, 24), shape: 'box', rows, loops: [] })
+  }
+  if (nodes.length === 0) return 'entities is empty: each needs a name and fields [{ name, type, key }]'
+
+  const edges: GraphEdge[] = []
+  const seen = new Set<string>()
+  let dropped = 0
+  for (const one of items(raw.relations).slice(0, 40)) {
+    const relation = record(one)
+    const from = index.get(words(relation.from, 30) ?? '')
+    const to = index.get(words(relation.to, 30) ?? '')
+    const label = [words(relation.kind, 18), words(relation.label, 16)].filter(Boolean).join(' ') || undefined
+    if (from !== undefined && from === to) {
+      nodes[from]?.loops.push(label ?? '')
+      continue
+    }
+    if (from === undefined || to === undefined || seen.has(`${from}>${to}`)) {
+      dropped++
+      continue
+    }
+    seen.add(`${from}>${to}`)
+    edges.push({ from, to, label, isReversed: false })
+  }
+
+  return { title: words(raw.title, 80) ?? 'Schema', layout: 'flow', nodes, edges, notes: wordList(raw.notes, 4, 120), dropped }
+}
+
+// ---------------------------------------------------------------- swimlane
+// A process read left to right, each step sitting in the lane of whoever does it.
+
+type Stride = { label: string; lane: number; next: number[] }
+type Swimlane = { title: string; lanes: string[]; steps: Stride[] }
+
+const readSwimlane = (input: unknown): Swimlane | string => {
+  const raw = record(input)
+  const lanes = wordList(raw.lanes, 6, 16)
+  const ids: string[] = []
+  const drafts: { label: string; lane: number; next?: string[] }[] = []
+  for (const one of items(raw.steps).slice(0, 10)) {
+    const step = record(one)
+    const label = words(step.label, 30)
+    const laneName = words(step.lane, 16)
+    if (label === undefined || laneName === undefined) continue
+    let lane = lanes.indexOf(laneName)
+    if (lane === -1) {
+      if (lanes.length >= 6) continue
+      lane = lanes.push(laneName) - 1
+    }
+    ids.push(words(step.id, 30) ?? label)
+    drafts.push({ label, lane, next: Array.isArray(step.next) ? wordList(step.next, 4, 30) : undefined })
+  }
+  if (drafts.length < 2) return 'steps needs at least two, each a label and a lane (one of lanes), in the order they happen'
+
+  return {
+    title: words(raw.title, 80) ?? 'Process',
+    lanes,
+    // A step hands over to the one after it unless it names where it goes.
+    steps: drafts.map((draft, at) => ({
+      label: draft.label,
+      lane: draft.lane,
+      next: draft.next
+        ? draft.next.map(id => ids.indexOf(id)).filter(to => to > at)
+        : at < drafts.length - 1
+          ? [at + 1]
+          : [],
+    })),
+  }
+}
+
+// A label over at most two lines of `width` cells, broken at a space when one fits.
+const twoLines = (text: string, width: number): [string, string] => {
+  if (widthOf(text) <= width) return [text, '']
+  let cut = 0
+  let used = 0
+  let space = -1
+  const chars = [...text]
+  while (cut < chars.length && used + cellsOf(chars[cut] ?? '') <= width) {
+    if (chars[cut] === ' ') space = cut
+    used += cellsOf(chars[cut] ?? '')
+    cut++
+  }
+  const at = space > 0 ? space : cut
+
+  return [chars.slice(0, at).join(''), clip(chars.slice(at).join('').trim(), width)]
+}
+
+const drawSwimlane = (ui: UI, swim: Swimlane, room: number): any => {
+  const nameW = clamp(Math.max(...swim.lanes.map(widthOf)), 4, 12) + 2
+  const cell = clamp(Math.floor((room - nameW) / swim.steps.length), 13, 24)
+  const box = cell - 4
+  const tall = 6
+  const canvas = makeCanvas(nameW + swim.steps.length * cell, swim.lanes.length * tall + 1)
+  const leftOf = (at: number): number => nameW + at * cell
+  const rowOfLane = (lane: number): number => lane * tall + 2
+  swim.lanes.forEach((lane, at) => {
+    put(canvas, 0, at * tall, '┄'.repeat(canvas.w), { dim: true })
+    put(canvas, 0, rowOfLane(at), clip(lane, nameW - 1), { color: tint(at), bold: true })
+  })
+  put(canvas, 0, swim.lanes.length * tall, '┄'.repeat(canvas.w), { dim: true })
+  swim.steps.forEach((step, at) => {
+    const x = leftOf(at)
+    const y = rowOfLane(step.lane)
+    const border: Style = { color: tint(step.lane) }
+    put(canvas, x, y - 1, `╭${'─'.repeat(box - 2)}╮`, border)
+    put(canvas, x, y, `│${' '.repeat(box - 2)}│`, border)
+    put(canvas, x, y + 1, `│${' '.repeat(box - 2)}│`, border)
+    put(canvas, x, y + 2, `╰${'─'.repeat(box - 2)}╯`, border)
+    twoLines(step.label, box - 2).forEach((line, index) => {
+      put(canvas, x + 1 + ((box - 2 - widthOf(line)) >> 1), y + index, line, { bold: true })
+    })
+  })
+  swim.steps.forEach((step, at) => {
+    for (const to of step.next) {
+      const target = swim.steps[to]
+      if (!target) continue
+      const layer = makeCanvas(canvas.w, canvas.h)
+      const from = rowOfLane(step.lane)
+      const into = rowOfLane(target.lane)
+      const start = leftOf(at) + box
+      const end = leftOf(to) - 2
+      if (from === into) hline(layer, from, start, end)
+      else {
+        hline(layer, from, start, start + 1)
+        vline(layer, start + 1, from, into)
+        hline(layer, into, start + 1, end)
+      }
+      stamp(canvas, layer, { color: tint(step.lane) })
+      put(canvas, end + 1, into, '▶', { color: tint(step.lane), bold: true })
+    }
+  })
+
+  return drawRows(ui, rowsOf(canvas))
+}
+
+// ---------------------------------------------------------------- pipeline
+// Stages left to right, each a column of jobs: CI/CD, ETL, any flow that
+// reads as "then".
+
+type Job = { label: string; status?: Status }
+type Pipeline = { title: string; stages: { name: string; jobs: Job[] }[]; labels: Record<Status, string> }
+
+const JOB_MARK: Record<Status, string> = { done: '✓', doing: '●', todo: '○', risk: '!' }
+
+const readPipeline = (input: unknown): Pipeline | string => {
+  const raw = record(input)
+  const stages: Pipeline['stages'] = []
+  for (const one of items(raw.stages).slice(0, 7)) {
+    const stage = record(one)
+    const name = words(stage.name, 20)
+    if (name === undefined) continue
+    const jobs: Job[] = []
+    for (const each of items(stage.jobs ?? stage.steps).slice(0, 6)) {
+      const job = typeof each === 'string' ? { label: each } : record(each)
+      const label = words(job.label ?? job.name, 30)
+      if (label !== undefined) jobs.push({ label, status: STATUSES.includes(job.status as Status) ? (job.status as Status) : undefined })
+    }
+    if (jobs.length > 0) stages.push({ name, jobs })
+  }
+  if (stages.length < 2) return 'stages needs at least two, each a name and jobs (labels, or { label, status })'
+  const given = record(raw.labels)
+
+  return {
+    title: words(raw.title, 80) ?? 'Pipeline',
+    stages,
+    labels: {
+      done: words(given.done, 16) ?? 'done',
+      doing: words(given.doing, 16) ?? 'running',
+      todo: words(given.todo, 16) ?? 'waiting',
+      risk: words(given.risk, 16) ?? 'failed',
+    },
+  }
+}
+
+const drawPipeline = (ui: UI, pipeline: Pipeline, room: number): any => {
+  const count = pipeline.stages.length
+  const cell = clamp(Math.floor((room + 5) / count), 14, 28)
+  const box = cell - 5
+  const most = Math.max(...pipeline.stages.map(stage => stage.jobs.length))
+  const canvas = makeCanvas(count * cell, 1 + most * 3)
+  const rowOfJob = (at: number): number => 2 + at * 3
+  pipeline.stages.forEach((stage, index) => {
+    const x = index * cell
+    put(canvas, x, 0, clip(stage.name, box), { color: tint(index), bold: true })
+    stage.jobs.forEach((job, at) => {
+      const y = rowOfJob(at)
+      const color = job.status ? STATUS_LOOK[job.status].color : tint(index)
+      put(canvas, x, y - 1, `╭${'─'.repeat(box - 2)}╮`, { color })
+      put(canvas, x, y, `│${' '.repeat(box - 2)}│`, { color })
+      put(canvas, x, y + 1, `╰${'─'.repeat(box - 2)}╯`, { color })
+      const label = clip(job.status ? `${JOB_MARK[job.status]} ${job.label}` : job.label, box - 2)
+      put(canvas, x + 1, y, label, { color: job.status === 'todo' ? 'inactive' : undefined, bold: job.status !== 'todo' })
+    })
+    const next = pipeline.stages[index + 1]
+    if (!next) return
+    // Every job of a stage feeds one bus, and the bus feeds every job of the next.
+    const layer = makeCanvas(canvas.w, canvas.h)
+    const bus = x + box + 2
+    stage.jobs.forEach((_, at) => hline(layer, rowOfJob(at), x + box, bus))
+    next.jobs.forEach((_, at) => hline(layer, rowOfJob(at), bus, x + cell - 2))
+    vline(layer, bus, rowOfJob(0), rowOfJob(Math.max(stage.jobs.length, next.jobs.length) - 1))
+    stamp(canvas, layer, WIRE)
+    next.jobs.forEach((_, at) => put(canvas, x + cell - 1, rowOfJob(at), '▶', WIRE))
+  })
+  const used = STATUSES.filter(status => pipeline.stages.some(stage => stage.jobs.some(job => job.status === status)))
+
+  return [
+    ...drawRows(ui, rowsOf(canvas)),
+    legendOf(ui, used.map(status => `${JOB_MARK[status]} ${pipeline.labels[status]}`), used.map(status => STATUS_LOOK[status].color), 1),
+  ]
+}
+
+// ---------------------------------------------------------------- gitgraph
+// Branches as lanes, time left to right: commits, where a branch forks, where
+// it merges back, and the tags along the way.
+
+type GitEvent = { branch: number; label?: string; merge?: number; tag?: string }
+type GitGraph = { title: string; branches: { name: string; from: number }[]; events: GitEvent[] }
+
+const readGitGraph = (input: unknown): GitGraph | string => {
+  const raw = record(input)
+  const branches: GitGraph['branches'] = []
+  const laneOf = (value: unknown, from?: unknown): number | undefined => {
+    const name = words(value, 20)
+    if (name === undefined) return undefined
+    const at = branches.findIndex(branch => branch.name === name)
+    if (at !== -1) return at
+    if (branches.length >= 6) return undefined
+    const parent = branches.findIndex(branch => branch.name === words(from, 20))
+    branches.push({ name, from: Math.max(0, parent) })
+
+    return branches.length - 1
+  }
+  for (const one of items(raw.branches)) {
+    const branch = typeof one === 'string' ? { name: one } : record(one)
+    laneOf(branch.name, branch.from)
+  }
+  const events: GitEvent[] = []
+  for (const one of items(raw.events).slice(0, 24)) {
+    const event = record(one)
+    const branch = laneOf(event.branch, event.from)
+    if (branch === undefined) continue
+    events.push({ branch, label: words(event.label, 24), merge: event.merge === undefined ? undefined : laneOf(event.merge), tag: words(event.tag, 12) })
+  }
+  if (events.length < 2) return 'events needs at least two, in time order: { branch, label, merge (a branch merged in), tag }'
+
+  return { title: words(raw.title, 80) ?? 'Branches', branches, events }
+}
+
+const drawGitGraph = (ui: UI, git: GitGraph, room: number): any => {
+  const nameW = clamp(Math.max(...git.branches.map(branch => widthOf(branch.name))), 4, 14) + 2
+  const cell = clamp(Math.floor((room - nameW) / git.events.length), 4, 12)
+  const canvas = makeCanvas(nameW + git.events.length * cell + 14, git.branches.length * 3)
+  const colOf = (at: number): number => nameW + at * cell + (cell >> 1)
+  const rowOfLane = (lane: number): number => lane * 3 + 1
+  git.branches.forEach((branch, lane) => {
+    const mine = git.events.map((event, at) => ({ event, at })).filter(one => one.event.branch === lane || one.event.merge === lane)
+    const first = lane === 0 ? 0 : (mine[0]?.at ?? 0)
+    const last = mine[mine.length - 1]?.at ?? first
+    const y = rowOfLane(lane)
+    const layer = makeCanvas(canvas.w, canvas.h)
+    const fork = colOf(first) - (cell >> 1)
+    hline(layer, y, lane === 0 ? colOf(0) : fork, colOf(last))
+    if (lane > 0) {
+      vline(layer, fork, rowOfLane(branch.from), y)
+      wire(layer, fork, rowOfLane(branch.from), LEFT | RIGHT)
+    }
+    for (const one of mine) {
+      if (one.event.merge === lane) vline(layer, colOf(one.at), y, rowOfLane(one.event.branch))
+    }
+    stamp(canvas, layer, { color: tint(lane) })
+    put(canvas, 0, y, clip(branch.name, nameW - 1), { color: tint(lane), bold: true })
+  })
+  git.events.forEach((event, at) => {
+    const x = colOf(at)
+    const y = rowOfLane(event.branch)
+    put(canvas, x, y, '●', { color: tint(event.branch), bold: true })
+    if (event.label !== undefined) {
+      const text = clip(event.label, Math.max(4, cell * 2 - 2))
+      const left = [x - 1, x + 2 - widthOf(text)].find(spot => isFree(canvas, spot, y - 1, widthOf(text)))
+      if (left !== undefined) put(canvas, left, y - 1, text, { dim: true })
+    }
+    if (event.tag !== undefined && isFree(canvas, x - 1, y + 1, widthOf(event.tag) + 2)) {
+      put(canvas, x - 1, y + 1, `◆ ${event.tag}`, { color: 'warning' })
+    }
+  })
+
+  return drawRows(ui, rowsOf(canvas))
 }
 
 // ---------------------------------------------------------------- sequence
@@ -2397,16 +2859,16 @@ type Kind = {
 const KINDS: Kind[] = [
   {
     name: 'diagram',
-    description: `Draws nodes and arrows as a diagram laid out top to bottom: system architecture, data or user flows, dependencies, processes, org charts. Call it in place of describing structure in paragraphs. Edges may branch, merge, skip layers and loop back; the wires leaving a node travel together in its color. A node's group gives it a color and its shape says what it is. Up to 28 nodes; a layer wider than about 6 nodes gets cramped, so prefer depth. ${SEEN}`,
+    description: `Draws nodes and arrows as a diagram laid out top to bottom: system architecture, data or user flows, dependencies, processes, org charts. Call it in place of describing structure in paragraphs. Edges may branch, merge, skip layers and loop back; the wires leaving a node travel together in its color. A node's group gives it a color and its shape says what it is. An edge from a node to itself is drawn as a loop inside it, so state machines work: states as round nodes, transitions as labelled edges. Up to 28 nodes; a layer wider than about 6 nodes gets cramped, so prefer depth. ${SEEN}`,
     inputSchema: shape(
       {
         title: text(),
         nodes: list(
-          shape({ id: text('short key the edges use'), label: text(), note: text('one short phrase'), group: text('color group: Client, API, Data'), shape: { type: 'string', enum: [...SHAPES], description: 'box (default), round (a start or end), decision (a branch point), store (a database or queue), external (outside the system)' } }, ['id', 'label']),
+          shape({ id: text('short key the edges use'), label: text(), note: text('one short phrase'), group: text('color group: Client, API, Data'), shape: { type: 'string', enum: [...SHAPES], description: 'box (default), round (a start, an end, a state), decision (a branch point), store (a database or queue), external (outside the system), person (a user or role)' } }, ['id', 'label']),
         ),
         edges: list(shape({ from: text('node id'), to: text('node id'), label: text('what travels, one or two words') }, ['from', 'to'])),
         notes: list(text(), 'key decisions or risks, 4 at most'),
-        layout: { type: 'string', enum: ['flow', 'matrix'], description: 'flow (default): boxes and wires. matrix: a grid of who depends on whom, for dependencies too dense for wires' },
+        layout: { type: 'string', enum: ['flow', 'zones', 'matrix'], description: 'flow (default): boxes and wires. zones: each group is a framed band, stacked in the order the groups first appear, for boundaries such as a VPC, a subsystem or a C4 container view. matrix: a grid of who depends on whom, for dependencies too dense for wires' },
       },
       ['title', 'nodes', 'edges'],
     ),
@@ -2417,12 +2879,12 @@ const KINDS: Kind[] = [
   },
   {
     name: 'layers',
-    description: `Draws the block picture of an architecture: bands stacked top to bottom (Clients, Gateway, Services, Data, Infrastructure), each holding components as blocks, optionally gathered into named zones, with cross-cutting concerns (security, monitoring, CI/CD) standing beside every band. Use it for a tech stack, a platform or capability map, a layered system overview: what exists and where it sits. For how things connect, use diagram. Up to 8 layers. ${SEEN}`,
+    description: `Draws the block picture of an architecture: bands stacked top to bottom (Clients, Gateway, Services, Data, Infrastructure), each holding components as blocks, optionally gathered into named zones that may hold zones of their own (region, availability zone, subnet: a deployment topology), with cross-cutting concerns (security, monitoring, CI/CD) standing beside every band. Use it for a tech stack, a platform or capability map, a layered system overview: what exists and where it sits. For how things connect, use diagram. Up to 8 layers. ${SEEN}`,
     inputSchema: shape(
       {
         title: text(),
         layers: list(
-          shape({ name: text(), items: list(text(), 'components directly in this layer'), zones: list(shape({ name: text(), items: list(text()) }, ['name']), 'named groups inside the layer, 5 at most') }, ['name']),
+          shape({ name: text(), items: list(text(), 'components directly in this layer'), zones: list(shape({ name: text(), items: list(text()), zones: list({ type: 'object' }, 'zones inside this one, same shape, up to 3 deep') }, ['name']), 'named groups inside the layer, 5 at most') }, ['name']),
           'top (what people touch) to bottom (infrastructure)',
         ),
         sides: list(shape({ name: text(), items: list(text()) }, ['name']), 'concerns that cut across all layers, 3 at most'),
@@ -2433,6 +2895,69 @@ const KINDS: Kind[] = [
     read: readLayers,
     draw: (ui, layers, room) => drawLayers(ui, layers, room),
     summary: (layers: Layers) => `layers "${layers.title}", ${layers.bands.length} layers`,
+  },
+  {
+    name: 'schema',
+    description: `Draws a data model or a class diagram: each entity is a box with its fields listed under its name, and relations are wires between boxes. For database tables and their keys (an ER diagram), domain models, classes or components with their members. Mark a field's key as pk or fk; put the cardinality (1:1, 1:N, N:N) or the kind of link (extends, uses) on the relation. Up to 14 entities of 14 fields. ${SEEN}`,
+    inputSchema: shape(
+      {
+        title: text(),
+        entities: list(
+          shape({ name: text(), note: text(), group: text('color group'), fields: list(shape({ name: text(), type: text(), key: { type: 'string', enum: ['pk', 'fk'] } }, ['name']), 'fields of a table, or members of a class') }, ['name', 'fields']),
+        ),
+        relations: list(shape({ from: text('entity name'), to: text('entity name'), kind: text('1:1, 1:N, N:N, extends, uses'), label: text() }, ['from', 'to'])),
+        notes: list(text()),
+      },
+      ['title', 'entities'],
+    ),
+    read: readSchema,
+    draw: (ui, graph, room) => drawDiagram(ui, graph, room),
+    summary: (graph: Graph) => `schema "${graph.title}", ${graph.nodes.length} entities, ${graph.edges.length} relations`,
+  },
+  {
+    name: 'swimlane',
+    description: `Draws a process as swimlanes: one lane per role, team or system, the steps left to right in the order they happen, each in the lane of whoever does it, so every handover shows. Up to 6 lanes and 10 steps. A step flows to the next one unless next names other steps. ${SEEN}`,
+    inputSchema: shape(
+      {
+        title: text(),
+        lanes: list(text(), 'top to bottom'),
+        steps: list(shape({ id: text(), label: text('two or three words'), lane: text('one of lanes'), next: list(text(), 'ids of later steps it leads to, when not simply the next one') }, ['label', 'lane']), 'in time order'),
+      },
+      ['title', 'lanes', 'steps'],
+    ),
+    read: readSwimlane,
+    draw: (ui, swim, room) => drawSwimlane(ui, swim, room),
+    summary: (swim: Swimlane) => `swimlane "${swim.title}", ${swim.lanes.length} lanes, ${swim.steps.length} steps`,
+  },
+  {
+    name: 'pipeline',
+    description: `Draws stages left to right, each a column of jobs, every stage feeding the next: CI/CD pipelines, ETL and data flows, build or release steps, any process that reads as "then". A job may carry a status. Up to 7 stages of 6 jobs. ${SEEN}`,
+    inputSchema: shape(
+      {
+        title: text(),
+        stages: list(shape({ name: text(), jobs: list(shape({ label: text(), status: { type: 'string', enum: ['done', 'doing', 'todo', 'risk'] } }, ['label'])) }, ['name', 'jobs'])),
+        labels: shape({ done: text(), doing: text(), todo: text(), risk: text() }),
+      },
+      ['title', 'stages'],
+    ),
+    read: readPipeline,
+    draw: (ui, pipeline, room) => drawPipeline(ui, pipeline, room),
+    summary: (pipeline: Pipeline) => `pipeline "${pipeline.title}", ${pipeline.stages.length} stages`,
+  },
+  {
+    name: 'gitgraph',
+    description: `Draws branches as lanes over time: commits, where a branch forks, where it merges back, and tags. For a branching strategy, a release flow, the history of a feature. branches go top to bottom, the first being the trunk; events are in time order. Up to 6 branches and 24 events. ${SEEN}`,
+    inputSchema: shape(
+      {
+        title: text(),
+        branches: list(shape({ name: text(), from: text('the branch it forks from; the trunk when left out') }, ['name'])),
+        events: list(shape({ branch: text(), label: text('a few words'), merge: text('a branch merged into this one at this commit'), tag: text('v1.2') }, ['branch']), 'in time order'),
+      },
+      ['title', 'branches', 'events'],
+    ),
+    read: readGitGraph,
+    draw: (ui, git, room) => drawGitGraph(ui, git, room),
+    summary: (git: GitGraph) => `gitgraph "${git.title}", ${git.branches.length} branches, ${git.events.length} events`,
   },
   {
     name: 'sequence',
@@ -2630,7 +3155,7 @@ const COMPARE = toolOf('compare')
 const GUIDE = [
   '# Visual answers (sketch mod)',
   'The person reads in a terminal and finds long paragraphs hard to follow. Whenever the content has a shape, draw the shape with a sketch tool and keep the text around it to a line or two. This holds for any field: engineering, product, design, research, planning.',
-  `- What a system is made of (layers of components, zones, cross-cutting concerns): ${toolOf('layers')}. How things connect (architecture wiring, a flow or process with decisions, dependencies, a pipeline): ${toolOf('diagram')}, with layout "matrix" when dependencies are dense. Who calls whom in order: ${toolOf('sequence')}. A hierarchy, breakdown or mind map: ${toolOf('tree')}.`,
+  `- What a system is made of (layers of components, zones, cross-cutting concerns): ${toolOf('layers')}. How things connect (architecture wiring, a flow or process with decisions, dependencies, a pipeline): ${toolOf('diagram')}, with layout "zones" to frame subsystems or boundaries and "matrix" when dependencies are dense; a state machine is a diagram too. Tables and their relations, or classes and their members: ${toolOf('schema')}. A process across roles or systems: ${toolOf('swimlane')}. Stages left to right (CI/CD, ETL, a data flow): ${toolOf('pipeline')}. Branches, merges and releases: ${toolOf('gitgraph')}. Who calls whom in order: ${toolOf('sequence')}. A hierarchy, breakdown or mind map: ${toolOf('tree')}.`,
   `- A plan over time, a roadmap or schedule: ${toolOf('timeline')}. Work by status or theme: ${toolOf('board')}.`,
   `- Prioritising on two axes, positioning, SWOT: ${toolOf('quadrant')}. A user journey or service blueprint: ${toolOf('journey')}. A screen or page layout: ${toolOf('wireframe')}.`,
   `- Numbers: ${toolOf('chart')} (bar, column, stacked, line, scatter, heatmap, histogram, funnel, share); a handful of headline numbers: ${toolOf('metrics')}.`,

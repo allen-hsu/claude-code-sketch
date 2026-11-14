@@ -4,7 +4,7 @@
 
 **讓 Claude Code 用圖回答，不再是一大段文字。**
 
-`sketch` 是一個 Claude Code mod（plugin）。它給 Claude 13 種繪圖工具，外加一條固定的指示：答案有形狀的時候，就把形狀畫出來。架構、流程、路線圖、使用者旅程、線框圖、圖表，都會以卡片的形式直接出現在終端機的對話裡，顏色跟著你的主題走。
+`sketch` 是一個 Claude Code mod（plugin）。它給 Claude 17 種繪圖工具，外加一條固定的指示：答案有形狀的時候，就把形狀畫出來。架構、流程、路線圖、使用者旅程、線框圖、圖表，都會以卡片的形式直接出現在終端機的對話裡，顏色跟著你的主題走。
 
 ![分層架構卡片](docs/images/zh-TW/layers.png)
 
@@ -32,8 +32,12 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 
 | 工具 | 畫什麼 | 適合用在 |
 | --- | --- | --- |
-| `layers` | 一層一層的元件、分區、橫跨各層的面向 | 技術堆疊、平台地圖、系統總覽 |
-| `diagram` | 節點與連線，自動排版 | 架構連線、流程圖、相依關係 |
+| `layers` | 一層一層的元件、可巢狀的分區、橫跨各層的面向 | 技術堆疊、平台地圖、部署拓撲 |
+| `diagram` | 節點與連線，自動排版 | 架構連線、流程圖、狀態機、邊界（C4）、相依關係 |
+| `schema` | 帶欄位的方塊與彼此的關係 | 資料模型（ER）、類別圖與元件圖 |
+| `swimlane` | 依角色或系統分道的步驟 | 有交接的流程 |
+| `pipeline` | 由左到右的階段，每個階段一欄工作 | CI/CD、ETL、資料流 |
+| `gitgraph` | 分支、提交、合併與標籤 | 分支策略、發版流程 |
 | `sequence` | 參與者與彼此之間的訊息 | 請求流程、協定、交接 |
 | `tree` | 大綱或心智圖 | 目標拆解、網站地圖、分類 |
 | `timeline` | 跨時段的長條與里程碑 | 路線圖、甘特圖、讀書計畫 |
@@ -61,6 +65,32 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 相依關係太密、線畫不清楚時，用 `layout: "matrix"` 改畫成矩陣，並附上統計：
 
 ![相依矩陣](docs/images/zh-TW/diagram-flow-matrix.png)
+
+用 `layout: "zones"` 時，每個群組會變成一個有框線的區塊：子系統、網路邊界、C4 容器圖都能畫。`person` 形狀代表使用者或角色。
+
+![分區與邊界](docs/images/zh-TW/diagram-zones.png)
+
+節點連回自己的線會畫成節點裡的迴圈，所以狀態機也是一種連線圖：
+
+![狀態機](docs/images/zh-TW/diagram-state.png)
+
+`layers` 的分區裡可以再放分區，可以用來畫部署拓撲（區域、可用區、子網）：
+
+![部署拓撲](docs/images/zh-TW/layers-topology.png)
+
+`schema` 畫出資料表或類別和它們的欄位，以及彼此的關係：
+
+| 資料模型（ER） | 類別圖 |
+| --- | --- |
+| ![ER 圖](docs/images/zh-TW/schema-er.png) | ![類別圖](docs/images/zh-TW/schema-class.png) |
+
+`swimlane` 把流程的每一步放在負責者的泳道裡；`pipeline` 把階段由左到右排開；`gitgraph` 呈現分支隨時間的變化：
+
+![泳道圖](docs/images/zh-TW/swimlane.png)
+
+![管線圖](docs/images/zh-TW/pipeline.png)
+
+![分支圖](docs/images/zh-TW/gitgraph.png)
 
 ![時序圖](docs/images/zh-TW/sequence.png)
 
@@ -118,7 +148,7 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 
 整個 mod 只有一個 hooks 模組：[`hooks/register.tsx`](hooks/register.tsx)。
 
-- session 開始時註冊 13 個工具。每個工具吃的都是單純的結構化輸入（節點與連線、時段與項目、標籤與數列）。
+- session 開始時註冊 17 個工具。每個工具吃的都是單純的結構化輸入（節點與連線、時段與項目、標籤與數列）。
 - 一個 `ui.render` hook 把每次工具呼叫在對話裡的那一列換成卡片，內容直接取自該次呼叫的輸入。mod 不保存任何狀態。
 - 一個 `prompt.compose` hook 在系統提示裡加一小段，告訴 Claude 什麼情況用哪種卡片，並把卡片周圍的文字寫短。
 - 圖表、指標、時間軸、旅程圖在呼叫進行時會播放約半秒的進場動畫。
@@ -126,7 +156,7 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 
 需要知道的事：
 
-- 在載入這個 mod 的 session 裡，工具定義和那段提示會跟著每次請求送出，大約多 3 到 4 千個 token（這是估計值，不是量測值）。
+- 在載入這個 mod 的 session 裡，工具定義和那段提示會跟著每次請求送出，大約多 5 千個 token（這是估計值，不是量測值）。
 - 卡片的寬度在繪製當下依終端機寬度決定。低於約 60 欄時，較寬的卡片會顯得擁擠。
 - 全形字元（中文、日文、韓文）以兩格寬計算。如果你的終端機把 `●` 這類寬度不明確的符號畫成兩格寬，部分卡片會對不齊。
 - 在 Claude Code 2.1.325 的終端機上開發與試用。卡片只用到每個介面都有的 `Box` 和 `Text`，但桌面版與手機版尚未測試。

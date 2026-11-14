@@ -262,6 +262,133 @@ export const samples: Record<string, any[]> = {
       },
     },
   ],
+  'schema#er': [
+    {
+      title: '訂單資料模型',
+      entities: [
+        { name: 'users', fields: [{ name: 'id', type: 'uuid', key: 'pk' }, { name: 'email', type: 'text' }, { name: 'created_at', type: 'timestamp' }] },
+        { name: 'orders', fields: [{ name: 'id', type: 'uuid', key: 'pk' }, { name: 'user_id', type: 'uuid', key: 'fk' }, { name: 'status', type: 'enum' }, { name: 'total', type: 'numeric' }] },
+        { name: 'order_items', fields: [{ name: 'order_id', type: 'uuid', key: 'fk' }, { name: 'product_id', type: 'uuid', key: 'fk' }, { name: 'quantity', type: 'int' }] },
+        { name: 'products', fields: [{ name: 'id', type: 'uuid', key: 'pk' }, { name: 'name', type: 'text' }, { name: 'price', type: 'numeric' }] },
+      ],
+      relations: [
+        { from: 'users', to: 'orders', kind: '1:N' },
+        { from: 'orders', to: 'order_items', kind: '1:N' },
+        { from: 'products', to: 'order_items', kind: '1:N' },
+      ],
+    },
+  ],
+  'schema#class': [
+    {
+      title: '金流類別圖',
+      entities: [
+        { name: 'PaymentService', fields: ['charge(order)', 'refund(payment)'] },
+        { name: 'PaymentProvider', note: '介面', fields: ['authorize(amount)', 'capture(id)', 'refund(id)'] },
+        { name: 'StripeProvider', fields: ['apiKey', 'webhookSecret'] },
+        { name: 'PaypalProvider', fields: ['clientId', 'sandbox'] },
+      ],
+      relations: [
+        { from: 'PaymentService', to: 'PaymentProvider', kind: '使用' },
+        { from: 'PaymentProvider', to: 'StripeProvider', kind: '實作' },
+        { from: 'PaymentProvider', to: 'PaypalProvider', kind: '實作' },
+      ],
+    },
+  ],
+  swimlane: [
+    {
+      title: '退款流程',
+      lanes: ['顧客', '客服', '財務', '金流商'],
+      steps: [
+        { label: '申請退款', lane: '顧客' },
+        { label: '確認訂單', lane: '客服' },
+        { label: '核准', lane: '財務' },
+        { label: '撥款', lane: '金流商' },
+        { label: '通知結果', lane: '客服' },
+        { label: '收到退款', lane: '顧客' },
+      ],
+    },
+  ],
+  pipeline: [
+    {
+      title: '發版管線',
+      labels: { done: '完成', doing: '執行中', todo: '等待中', risk: '失敗' },
+      stages: [
+        { name: '建置', jobs: [{ label: '程式碼檢查', status: 'done' }, { label: '編譯', status: 'done' }, { label: '單元測試', status: 'done' }] },
+        { name: '測試', jobs: [{ label: '整合測試', status: 'done' }, { label: '端對端測試', status: 'doing' }] },
+        { name: '打包', jobs: [{ label: 'Docker 映像', status: 'todo' }] },
+        { name: '部署', jobs: [{ label: '測試環境', status: 'todo' }, { label: '正式環境', status: 'todo' }] },
+      ],
+    },
+  ],
+  gitgraph: [
+    {
+      title: '發版分支流程',
+      branches: [{ name: 'main' }, { name: 'develop' }, { name: 'feature/login', from: 'develop' }],
+      events: [
+        { branch: 'main', label: '初始化', tag: 'v1.0' },
+        { branch: 'develop', label: '建環境' },
+        { branch: 'feature/login', label: '表單' },
+        { branch: 'develop', label: '修正' },
+        { branch: 'feature/login', label: 'oauth' },
+        { branch: 'develop', label: '合併', merge: 'feature/login' },
+        { branch: 'main', label: '發版', merge: 'develop', tag: 'v1.1' },
+      ],
+    },
+  ],
+  'diagram#zones': [
+    {
+      title: '含邊界的容器圖',
+      layout: 'zones',
+      nodes: [
+        { id: 'user', label: '顧客', shape: 'person', group: '使用者' },
+        { id: 'web', label: '網站', group: '前端' },
+        { id: 'mobile', label: '手機 App', group: '前端' },
+        { id: 'api', label: 'API', group: '後端' },
+        { id: 'worker', label: 'Worker', group: '後端' },
+        { id: 'db', label: 'Postgres', shape: 'store', group: '資料' },
+        { id: 'queue', label: '佇列', shape: 'store', group: '資料' },
+        { id: 'mail', label: '郵件服務商', shape: 'external', group: '外部' },
+      ],
+      edges: [
+        { from: 'user', to: 'web' }, { from: 'user', to: 'mobile' }, { from: 'web', to: 'api', label: 'HTTPS' }, { from: 'mobile', to: 'api' },
+        { from: 'api', to: 'db' }, { from: 'api', to: 'queue' }, { from: 'queue', to: 'worker', label: '工作' }, { from: 'worker', to: 'mail' },
+      ],
+    },
+  ],
+  'diagram#state': [
+    {
+      title: '訂單狀態機',
+      nodes: [
+        { id: 'new', label: '已建立', shape: 'round' },
+        { id: 'paid', label: '已付款', shape: 'round' },
+        { id: 'ship', label: '已出貨', shape: 'round' },
+        { id: 'done', label: '已送達', shape: 'round' },
+        { id: 'cancel', label: '已取消', shape: 'round' },
+        { id: 'refund', label: '已退款', shape: 'round' },
+      ],
+      edges: [
+        { from: 'new', to: 'paid', label: '付款' }, { from: 'new', to: 'cancel', label: '逾時' }, { from: 'paid', to: 'ship', label: '出貨' },
+        { from: 'paid', to: 'cancel', label: '取消' }, { from: 'ship', to: 'ship', label: '更新物流' }, { from: 'ship', to: 'done', label: '簽收' },
+        { from: 'done', to: 'refund', label: '退貨' },
+      ],
+    },
+  ],
+  'layers#topology': [
+    {
+      title: '部署拓撲',
+      layers: [
+        { name: '邊緣', items: ['Route 53', 'CloudFront', 'WAF'] },
+        {
+          name: '區域',
+          zones: [
+            { name: '可用區 A', zones: [{ name: '公有子網', items: ['ALB', 'NAT'] }, { name: '私有子網', items: ['API', 'Worker'] }] },
+            { name: '可用區 B', zones: [{ name: '公有子網', items: ['ALB', 'NAT'] }, { name: '私有子網', items: ['API', 'Worker'] }] },
+          ],
+        },
+        { name: '託管服務', items: ['RDS', 'ElastiCache', 'S3', 'SQS'] },
+      ],
+    },
+  ],
   compare: [
     {
       question: '要用哪個資料庫？',

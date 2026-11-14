@@ -4,7 +4,7 @@ English | [繁體中文](README.zh-TW.md)
 
 **Claude Code answers with pictures instead of paragraphs.**
 
-`sketch` is a Claude Code mod (plugin). It gives Claude 13 drawing tools and one standing instruction: when an answer has a shape, draw the shape. Architecture, flows, roadmaps, user journeys, wireframes and charts appear as cards in the transcript, in your terminal, in your theme's colors.
+`sketch` is a Claude Code mod (plugin). It gives Claude 17 drawing tools and one standing instruction: when an answer has a shape, draw the shape. Architecture, flows, roadmaps, user journeys, wireframes and charts appear as cards in the transcript, in your terminal, in your theme's colors.
 
 ![A layered architecture card](docs/images/en/layers.png)
 
@@ -32,8 +32,12 @@ Then just ask as usual: "how is this service put together?", "compare these thre
 
 | Tool | Draws | Good for |
 | --- | --- | --- |
-| `layers` | Bands of components, zones, side concerns | Tech stacks, platform maps, system overviews |
-| `diagram` | Nodes and wires, laid out automatically | Architecture wiring, flowcharts, dependencies |
+| `layers` | Bands of components, nested zones, side concerns | Tech stacks, platform maps, deployment topologies |
+| `diagram` | Nodes and wires, laid out automatically | Architecture wiring, flowcharts, state machines, boundaries (C4), dependencies |
+| `schema` | Boxes with fields, and their relations | Data models (ER), class and component diagrams |
+| `swimlane` | Steps across lanes of roles or systems | Processes with handovers |
+| `pipeline` | Stages left to right, each a column of jobs | CI/CD, ETL, data flows |
+| `gitgraph` | Branches, commits, merges and tags | Branching strategy, release flow |
 | `sequence` | Actors and the messages between them | Request flows, protocols, handoffs |
 | `tree` | An outline or a mind map | Goal breakdowns, sitemaps, taxonomies |
 | `timeline` | Bars over periods, milestones | Roadmaps, gantt schedules, study plans |
@@ -61,6 +65,32 @@ The cards below are drawn from the made-up inputs in [`preview/samples.en.ts`](p
 When dependencies are too dense for wires, `layout: "matrix"` draws who uses whom as a grid, with counts:
 
 ![Dependency matrix](docs/images/en/diagram-flow-matrix.png)
+
+With `layout: "zones"`, each group becomes a framed band: subsystems, network boundaries, a C4 container view. The `person` shape marks a user or a role.
+
+![Zones and boundaries](docs/images/en/diagram-zones.png)
+
+An edge from a node to itself is drawn as a loop inside the node, so a state machine is a diagram too:
+
+![State machine](docs/images/en/diagram-state.png)
+
+Zones in `layers` can hold zones of their own, which covers deployment topologies (region, availability zone, subnet):
+
+![Deployment topology](docs/images/en/layers-topology.png)
+
+`schema` draws tables or classes with their fields, and the relations between them:
+
+| Data model (ER) | Classes |
+| --- | --- |
+| ![ER diagram](docs/images/en/schema-er.png) | ![Class diagram](docs/images/en/schema-class.png) |
+
+`swimlane` puts each step of a process in the lane of whoever does it, `pipeline` lays stages out left to right, and `gitgraph` shows branches over time:
+
+![Swimlane](docs/images/en/swimlane.png)
+
+![Pipeline](docs/images/en/pipeline.png)
+
+![Branch graph](docs/images/en/gitgraph.png)
 
 ![Sequence diagram](docs/images/en/sequence.png)
 
@@ -118,7 +148,7 @@ When dependencies are too dense for wires, `layout: "matrix"` draws who uses who
 
 The whole mod is one hooks module, [`hooks/register.tsx`](hooks/register.tsx):
 
-- At session start it registers the 13 tools. Each takes plain structured input (nodes and edges, periods and items, labels and series).
+- At session start it registers the 17 tools. Each takes plain structured input (nodes and edges, periods and items, labels and series).
 - A `ui.render` hook replaces each tool call's row in the transcript with the card, drawn from the call's own input. The mod keeps no state.
 - A `prompt.compose` hook adds one short section to the system prompt telling Claude when to reach for which card and to keep the text around it brief.
 - Charts, metrics, timelines and journeys play a half-second entrance while the call runs.
@@ -126,7 +156,7 @@ The whole mod is one hooks module, [`hooks/register.tsx`](hooks/register.tsx):
 
 Things to know:
 
-- The tool definitions and the prompt section ride on every request in a session where the mod is loaded: roughly 3 to 4 thousand tokens (an estimate, not a measurement).
+- The tool definitions and the prompt section ride on every request in a session where the mod is loaded: roughly 5 thousand tokens (an estimate, not a measurement).
 - Cards are sized to the terminal width when they are drawn. Below about 60 columns the wider cards get cramped.
 - Wide characters (Chinese, Japanese, Korean) are measured as two cells. A terminal that draws ambiguous-width symbols such as `●` two cells wide will misalign some cards.
 - Built and tried on Claude Code 2.1.325 in a terminal. The cards use only `Box` and `Text`, which every surface has, but the desktop and mobile surfaces are untested.
