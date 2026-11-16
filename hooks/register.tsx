@@ -3432,7 +3432,9 @@ let lastPress = 0
 
 // How far each running card's entrance has played, 0 to 1, by tool_use_id.
 const entrances = new Map<string, number>()
-const STEPS = 7
+// About a second and a quarter: redraws of a transcript row come at most ten
+// a second, so each step gets one.
+const STEPS = 12
 
 const roomOf = (columns: number | undefined): number => Math.max(40, Math.min(columns ?? 100, 150) - 6)
 
@@ -3462,12 +3464,13 @@ export const register: Register = on => {
 
       if (kind.isAnimated === true && (next?.budget?.remainingMs ?? 0) > 4000) {
         const id = String(e.tool_use_id)
+        entrances.set(id, 0.04)
         try {
           for (let frame = 1; frame <= STEPS; frame++) {
             const at = frame / (STEPS + 1)
             entrances.set(id, 1 - (1 - at) * (1 - at))
             $.ui.invalidate('ui.render')
-            await $.clock.sleep(80)
+            await $.clock.sleep(100)
           }
         } catch {
           // An entrance that cannot play is skipped: the card draws whole.
@@ -3553,10 +3556,9 @@ export const register: Register = on => {
         return chosen
       })
     }
-    const played =
-      kind.isAnimated === true && e.props.isRunning === true
-        ? (entrances.get(String(e.props.tool_use_id)) ?? 0.04)
-        : 1
+    // While the call's own hook plays the entrance, the row reports the call
+    // as not yet running, so the entrance is found by the call's id instead.
+    const played = kind.isAnimated === true ? (entrances.get(String(e.props.tool_use_id)) ?? 1) : 1
 
     return frameOf(ui, model.title, kind.draw(ui, model, roomOf(e.viewport?.columns), played))
   })

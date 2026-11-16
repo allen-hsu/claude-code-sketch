@@ -53,12 +53,12 @@ await Bun.write(`${outBase}-interaction.frames.json`, JSON.stringify(interaction
 // The entrance: the chart's call runs, and each step of it is a frame.
 const chart = samples.chart!.find((one: { kind: string }) => one.kind === 'line')
 const chartTool = 'mcp__sketch__chart'
-const entrance: { card: unknown; ms: number }[] = [{ card: await draw(chartTool, chart, true), ms: 500 }]
+const entrance: { card: unknown; ms: number }[] = []
 const stepping = {
   ...engine,
   clock: {
     sleep: async () => {
-      entrance.push({ card: await draw(chartTool, chart, true), ms: 90 })
+      entrance.push({ card: await draw(chartTool, chart, true), ms: entrance.length === 0 ? 400 : 100 })
     },
   },
   ui: { ...engine.ui, invalidate: () => undefined },

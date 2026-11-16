@@ -168,7 +168,7 @@ The whole mod is one hooks module, [`hooks/register.tsx`](hooks/register.tsx):
 - At session start it registers the 17 tools. Each takes plain structured input (nodes and edges, periods and items, labels and series).
 - A `ui.render` hook replaces each tool call's row in the transcript with the card, drawn from the call's own input. Hover groups light a node's wires with no code running; node names are buttons, and the one piece of state the mod keeps is which node each diagram card has focused (declared in [`types/index.d.ts`](types/index.d.ts)), plus the tick the pulse steps on.
 - A `prompt.compose` hook adds one short section to the system prompt telling Claude when to reach for which card and to keep the text around it brief.
-- Charts, metrics, timelines and journeys play a half-second entrance while the call runs.
+- Charts, metrics, timelines and journeys draw themselves in over about a second while the call runs.
 - Press `ctrl+o` to see the raw tool call behind a card.
 
 Things to know:
