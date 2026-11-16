@@ -80,6 +80,7 @@ const BORDERS: Record<string, string> = { round: '╭╮╰╯─│', single: '
 
 export const layout = (node: any, avail: number, stretch?: number): Block => {
   const p = node.props
+  if (node.props?.display === 'none') return { lines: [], width: 0 }
   if (node.type === 'Button') return layout({ type: 'Box', props: { flexDirection: 'row' }, children: node.children }, avail, stretch)
   if (node.type === 'Text') {
     const style = { fg: p.color, bold: p.bold, dim: p.dimColor, inv: p.inverse, ul: p.underline, sc: p.hover?.scope }

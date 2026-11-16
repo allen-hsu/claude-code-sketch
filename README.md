@@ -18,6 +18,7 @@ A dense diagram stays readable because you can ask it about one node at a time:
 - **Click** a node's name (anywhere across the middle of its box, or its name in the list under a dense picture): its wires in and out turn thick, sit on top of everything else, and a pulse runs along them from source to target; the rest fades. Click it again to clear it, or click another node to move the focus. Each card keeps its own focus.
 - Every node's wires have their own color, and where two wires cross, the later one simply passes over the earlier: no junction marks that could be mistaken for a connection.
 - Past a handful of crossings, every connection is also written out under the picture.
+- Text too long for its box (a pipeline job, a swimlane step, a node's name or note, a roadmap item) takes a second line where it can; whatever still does not fit shows whole on the line under the card while you hover it.
 
 Hover and click need a terminal that reports the mouse to Claude Code (the fullscreen renderer). The pulse runs for 30 seconds after the last click and then stops, leaving the thick lines; it redraws the focused card a few times a second while it runs.
 

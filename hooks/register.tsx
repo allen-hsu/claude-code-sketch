@@ -431,12 +431,47 @@ const notesOf = (ui: UI, notes: string[]): any[] =>
     </ui.Box>
   ))
 
+// Texts a card had to cut to fit, kept whole: the card ends with a reserved
+// line where the one under the pointer shows in full. Reset for each card.
+let details: { scope: string; text: string }[] = []
+
+// `text` cut to `width`; when cut, the whole text is kept for that line, shown
+// while anything in hover group `scope` (default: one of its own) is hovered.
+const fitted = (text: string, width: number, scope?: string): { text: string; scope?: string } => {
+  if (widthOf(text) <= width) return { text, scope }
+  const group = scope ?? scopeOf(`d${details.length}`)
+  if (!details.some(one => one.scope === group)) details.push({ scope: group, text })
+  return { text: clip(text, width), scope: group }
+}
+
+// The same over two lines, broken at a space where one fits.
+const fittedTwo = (text: string, width: number, scope?: string): { lines: [string, string]; scope?: string } => {
+  const lines = twoLines(text, width)
+  const isWhole = (lines[0] + (lines[1] === '' ? '' : ' ' + lines[1])).replace(/\s+/g, ' ') === text.replace(/\s+/g, ' ')
+  if (isWhole) return { lines, scope }
+  const group = scope ?? scopeOf(`d${details.length}`)
+  if (!details.some(one => one.scope === group)) details.push({ scope: group, text })
+  return { lines, scope: group }
+}
+
 const frameOf = (ui: UI, title: string, body: any): any => (
   <ui.Box flexDirection="column" marginTop={1}>
     <ui.Text bold color="claude">
       {`◆ ${title}`}
     </ui.Text>
     {body}
+    {details.length > 0 && (
+      <ui.Box position="relative" height={2} flexDirection="row">
+        <ui.Text dimColor>⋯</ui.Text>
+        {details.map(detail => (
+          <ui.Box position="absolute" top={0} left={2} display="none" hover={{ scope: detail.scope, display: 'flex' }}>
+            <ui.Text color="text" wrap="wrap">
+              {detail.text}
+            </ui.Text>
+          </ui.Box>
+        ))}
+      </ui.Box>
+    )}
   </ui.Box>
 )
 
@@ -492,7 +527,7 @@ const readGraph = (input: unknown): Graph | string => {
     const node = typeof one === 'string' ? { label: one } : record(one)
     const label = words(node.label ?? node.name ?? node.id, 40)
     if (label === undefined) continue
-    add(words(node.id, 40) ?? label, label, words(node.note, 40), words(node.group, 24), pick(node.shape, SHAPES, 'box'))
+    add(words(node.id, 40) ?? label, label, words(node.note, 120), words(node.group, 24), pick(node.shape, SHAPES, 'box'))
   }
   // The first version's shape, layers of nodes, still reads: each layer is a group.
   for (const one of items(raw.layers)) {
@@ -898,7 +933,10 @@ const layoutGraph = (graph: Graph, room: number) => {
     let line = top + 1
     // The name's whole row inside the frame is one button, padding included,
     // so a click anywhere across the middle of the box focuses the node.
-    const name = clip(node?.shape === 'person' ? `☺ ${node.label}` : (node?.label ?? ''), inner)
+    const fullName = node?.shape === 'person' ? `☺ ${node.label}` : (node?.label ?? '')
+    const isCut = widthOf(fullName) > inner || (node?.note !== undefined && widthOf(node.note) > inner)
+    if (isCut) fitted(`${node?.label ?? ''}${node?.note === undefined ? '' : ` · ${node.note}`}`, 0, border.scope)
+    const name = clip(fullName, inner)
     const before = (inner - widthOf(name)) >> 1
     put(canvas, slot.x + 1, line++, ' '.repeat(before) + name + ' '.repeat(inner - before - widthOf(name)), {
       ...(slot.node === focus && { color: 'claude' }),
@@ -1410,7 +1448,7 @@ const readSwimlane = (input: unknown): Swimlane | string => {
   const drafts: { label: string; lane: number; next?: string[] }[] = []
   for (const one of items(raw.steps).slice(0, 10)) {
     const step = record(one)
-    const label = words(step.label, 30)
+    const label = words(step.label, 100)
     const laneName = words(step.lane, 16)
     if (label === undefined || laneName === undefined) continue
     let lane = lanes.indexOf(laneName)
@@ -1477,8 +1515,9 @@ const drawSwimlane = (ui: UI, swim: Swimlane, room: number): any => {
     put(canvas, x, y, `│${' '.repeat(box - 2)}│`, border)
     put(canvas, x, y + 1, `│${' '.repeat(box - 2)}│`, border)
     put(canvas, x, y + 2, `╰${'─'.repeat(box - 2)}╯`, border)
-    twoLines(step.label, box - 2).forEach((line, index) => {
-      put(canvas, x + 1 + ((box - 2 - widthOf(line)) >> 1), y + index, line, { bold: true })
+    const fit = fittedTwo(step.label, box - 2)
+    fit.lines.forEach((line, index) => {
+      put(canvas, x + 1 + ((box - 2 - widthOf(line)) >> 1), y + index, line, { bold: true, scope: fit.scope })
     })
   })
   swim.steps.forEach((step, at) => {
@@ -1523,7 +1562,7 @@ const readPipeline = (input: unknown): Pipeline | string => {
     const jobs: Job[] = []
     for (const each of items(stage.jobs ?? stage.steps).slice(0, 6)) {
       const job = typeof each === 'string' ? { label: each } : record(each)
-      const label = words(job.label ?? job.name, 30)
+      const label = words(job.label ?? job.name, 120)
       if (label !== undefined) jobs.push({ label, status: STATUSES.includes(job.status as Status) ? (job.status as Status) : undefined })
     }
     if (jobs.length > 0) stages.push({ name, jobs })
@@ -1548,8 +1587,11 @@ const drawPipeline = (ui: UI, pipeline: Pipeline, room: number): any => {
   const cell = clamp(Math.floor((room + 5) / count), 14, 28)
   const box = cell - 5
   const most = Math.max(...pipeline.stages.map(stage => stage.jobs.length))
-  const canvas = makeCanvas(count * cell, 1 + most * 3)
-  const rowOfJob = (at: number): number => 2 + at * 3
+  // Boxes take a second line only when some label needs it.
+  const textOf = (job: Job): string => (job.status ? `${JOB_MARK[job.status]} ${job.label}` : job.label)
+  const inner = pipeline.stages.some(stage => stage.jobs.some(job => widthOf(textOf(job)) > box - 2)) ? 2 : 1
+  const canvas = makeCanvas(count * cell, 1 + most * (inner + 2))
+  const rowOfJob = (at: number): number => 2 + at * (inner + 2)
   pipeline.stages.forEach((stage, index) => {
     const x = index * cell
     put(canvas, x, 0, clip(stage.name, box), { color: tint(index), bold: true })
@@ -1557,10 +1599,12 @@ const drawPipeline = (ui: UI, pipeline: Pipeline, room: number): any => {
       const y = rowOfJob(at)
       const color = job.status ? STATUS_LOOK[job.status].color : tint(index)
       put(canvas, x, y - 1, `╭${'─'.repeat(box - 2)}╮`, { color })
-      put(canvas, x, y, `│${' '.repeat(box - 2)}│`, { color })
-      put(canvas, x, y + 1, `╰${'─'.repeat(box - 2)}╯`, { color })
-      const label = clip(job.status ? `${JOB_MARK[job.status]} ${job.label}` : job.label, box - 2)
-      put(canvas, x + 1, y, label, { color: job.status === 'todo' ? 'inactive' : undefined, bold: job.status !== 'todo' })
+      for (let row = 0; row < inner; row++) put(canvas, x, y + row, `│${' '.repeat(box - 2)}│`, { color })
+      put(canvas, x, y + inner, `╰${'─'.repeat(box - 2)}╯`, { color })
+      const fit = inner === 2 ? fittedTwo(textOf(job), box - 2) : { lines: [textOf(job)], scope: undefined }
+      fit.lines.forEach((line, index) => {
+        put(canvas, x + 1, y + index, line, { color: job.status === 'todo' ? 'inactive' : undefined, bold: job.status !== 'todo', scope: fit.scope })
+      })
     })
     const next = pipeline.stages[index + 1]
     if (!next) return
@@ -1895,7 +1939,7 @@ const readTimeline = (input: unknown): Timeline | string => {
   const tasks: Task[] = []
   for (const one of items(raw.items).slice(0, 24)) {
     const task = record(one)
-    const name = words(task.name, 40)
+    const name = words(task.name, 100)
     const from = at(task.from)
     if (name === undefined || from === undefined) continue
     const to = at(task.to) ?? from
@@ -1952,7 +1996,14 @@ const drawTimeline = (ui: UI, timeline: Timeline, room: number, played: number):
     out.push(
       <ui.Box flexDirection="row">
         <ui.Box width={labelW + 1} flexShrink={0}>
-          <ui.Text wrap="truncate-end">{task.name}</ui.Text>
+          {(() => {
+            const fit = fitted(task.name, labelW)
+            return (
+              <ui.Text {...(fit.scope !== undefined && { hover: { scope: fit.scope, ...LIT } })} wrap="truncate-end">
+                {fit.text}
+              </ui.Text>
+            )
+          })()}
         </ui.Box>
         <ui.Box paddingLeft={task.from * column}>
           <ui.Text color={look.color}>{look.char.repeat(length)}</ui.Text>
@@ -3541,6 +3592,7 @@ export const register: Register = on => {
     const focused = (await read($, picked))[card]
     const phase = focused !== undefined && Date.now() - lastPress < FLOW_MS ? await read($, tick) : undefined
     scopeBase = `sk${card.slice(-20)}`
+    details = []
     focusNode = focused
     flowPhase = phase
     pressNode = node => {
