@@ -387,6 +387,30 @@ export const samples: Record<string, any[]> = {
       ],
     },
   ],
+  'diagram#interactive': [
+    {
+      title: 'Service map: hover a node, click to follow it',
+      demo: { hover: ['web', 'orders'], click: ['orders', 'pg'] },
+      nodes: [
+        { id: 'web', label: 'Web app' },
+        { id: 'mobile', label: 'Mobile app' },
+        { id: 'admin', label: 'Admin console' },
+        { id: 'gw', label: 'API gateway' },
+        { id: 'orders', label: 'Orders' },
+        { id: 'pay', label: 'Payments' },
+        { id: 'stock', label: 'Inventory' },
+        { id: 'search', label: 'Search' },
+        { id: 'pg', label: 'Postgres', shape: 'store' },
+        { id: 'redis', label: 'Redis', shape: 'store' },
+        { id: 'kafka', label: 'Kafka', shape: 'store' },
+      ],
+      edges: [
+        ['web', 'gw'], ['mobile', 'gw'], ['admin', 'gw'], ['admin', 'pg'], ['gw', 'orders'], ['gw', 'search'], ['gw', 'stock'],
+        ['orders', 'pay'], ['orders', 'pg'], ['orders', 'kafka'], ['orders', 'redis'], ['pay', 'pg'], ['pay', 'kafka'],
+        ['stock', 'pg'], ['stock', 'redis'], ['search', 'redis'], ['search', 'kafka'], ['gw', 'redis'],
+      ].map(([from, to]) => ({ from, to })),
+    },
+  ],
   compare: [
     {
       question: 'Which database?',

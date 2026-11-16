@@ -1,4 +1,7 @@
+import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
+
+import type { Picked } from '../types'
 
 // sketch: tools the model calls in place of paragraphs. Each draws one card in
 // the transcript, from the call's own input:
@@ -25,8 +28,11 @@ import type { Register } from 'claude-code'
 
 const toolOf = (name: string): string => `mcp__sketch__${name}`
 
-type UI = { Box: any; Text: any }
-type Style = { color?: string; bold?: boolean; dim?: boolean }
+type UI = { Box: any; Text: any; Button?: any }
+// `scope` names a hover group: everything drawn with one lights up together
+// while the pointer rests on any of it (the fullscreen terminal reports it).
+// `press` makes the text a button that focuses that node of a diagram.
+type Style = { color?: string; bold?: boolean; dim?: boolean; scope?: string; press?: number; heavy?: boolean }
 type Seg = Style & { text: string }
 type Row = { indent: number; segs: Seg[] }
 
@@ -158,7 +164,9 @@ const fmt = (value: number): string => {
 // A grid of cells for what flex boxes cannot draw: wires that cross and join.
 // A wire is a set of directions per cell, so two that meet become a joint.
 
-type Cell = Style & { ch: string; mask: number; isRound?: boolean }
+// `flow` is a focused wire cell's distance from where the wire starts, for
+// the pulse that runs along it.
+type Cell = Style & { ch: string; mask: number; isRound?: boolean; isHeavy?: boolean; join?: number; flow?: number }
 type Canvas = { w: number; h: number; cells: Cell[][] }
 
 const UP = 1
@@ -166,6 +174,8 @@ const DOWN = 2
 const LEFT = 4
 const RIGHT = 8
 const JOINTS = [' ', '│', '│', '│', '─', '┘', '┐', '┤', '─', '└', '┌', '├', '─', '┴', '┬', '┼']
+// The same joints in heavy strokes, for a focused node's wires.
+const HEAVY_JOINTS = [' ', '┃', '┃', '┃', '━', '┛', '┓', '┫', '━', '┗', '┏', '┣', '━', '┻', '┳', '╋']
 const SKIP = '\u0000'
 const WIRE: Style = { color: 'inactive' }
 
@@ -192,6 +202,8 @@ const put = (canvas: Canvas, x: number, y: number, text: string, style: Style = 
       cell.color = style.color
       cell.bold = style.bold
       cell.dim = style.dim
+      cell.scope = style.scope
+      cell.press = style.press
       const next = cells === 2 ? cellAt(canvas, at + 1, y) : undefined
       if (next) {
         next.ch = SKIP
@@ -208,6 +220,7 @@ const wire = (canvas: Canvas, x: number, y: number, bits: number, style: Style =
   cell.mask |= bits
   cell.color = style.color
   cell.dim = style.dim
+  cell.scope = style.scope
 }
 
 const vline = (canvas: Canvas, x: number, y1: number, y2: number, style: Style = WIRE): void => {
@@ -239,7 +252,7 @@ const isFree = (canvas: Canvas, x: number, y: number, width: number): boolean =>
 }
 
 const sameStyle = (a: Style, b: Style): boolean =>
-  a.color === b.color && Boolean(a.bold) === Boolean(b.bold) && Boolean(a.dim) === Boolean(b.dim)
+  a.color === b.color && Boolean(a.bold) === Boolean(b.bold) && Boolean(a.dim) === Boolean(b.dim) && a.scope === b.scope && a.press === b.press
 
 // Rows of runs: a row never opens on a space (the indent carries those) and a
 // run of spaces rides the run before it, so no text depends on kept padding.
@@ -253,15 +266,21 @@ const rowsOf = (canvas: Canvas): Row[] =>
       const cell = line[x]
       if (!cell || cell.ch === SKIP) continue
       const char =
-        cell.ch !== '' ? cell.ch : ((cell.isRound ? ROUNDED[cell.mask] : undefined) ?? JOINTS[cell.mask] ?? ' ')
+        cell.ch !== ''
+          ? cell.ch
+          : cell.isHeavy
+            ? (HEAVY_JOINTS[cell.mask] ?? ' ')
+            : ((cell.isRound ? ROUNDED[cell.mask] : undefined) ?? JOINTS[cell.mask] ?? ' ')
       const last = segs[segs.length - 1]
-      if (char === ' ') {
+      if (char === ' ' && cell.press === undefined) {
         if (last) last.text += ' '
         else indent++
         continue
       }
-      if (last && sameStyle(last, cell)) last.text += char
-      else segs.push({ text: char, color: cell.color, bold: cell.bold, dim: cell.dim })
+      const isPulse = flowPhase !== undefined && cell.flow !== undefined && (((cell.flow - flowPhase) % 6) + 6) % 6 < 2
+      const style: Style = isPulse ? { ...cell, color: 'text', bold: true, dim: false } : cell
+      if (last && sameStyle(last, style)) last.text += char
+      else segs.push({ text: char, color: style.color, bold: style.bold, dim: style.dim, scope: style.scope, press: style.press })
     }
 
     return { indent, segs }
@@ -269,21 +288,43 @@ const rowsOf = (canvas: Canvas): Row[] =>
 
 const ROUNDED: Record<number, string> = { 5: '╯', 6: '╮', 9: '╰', 10: '╭' }
 
-// Lays one layer of wires over a canvas in one color. Where it meets an
-// earlier wire at a right angle the two cross; anywhere else the later wire is
-// drawn over the earlier, which reads as passing in front of it.
-const stamp = (canvas: Canvas, layer: Canvas, style: Style): void => {
+// Lays one layer of wires over a canvas in one color and answers how many
+// earlier wires it crossed. Where two cross, the later one lies over the
+// earlier, in its own color and stroke, so it reads as passing over and no
+// wire takes on another's color. Wires drawn last are on top. Cells in `joins`
+// belong to the wires running into one node: wires headed for the same node
+// merge there, and those cells join that node's hover group (`joinScope`).
+const stamp = (
+  canvas: Canvas,
+  layer: Canvas,
+  style: Style,
+  joins?: Map<string, number>,
+  joinScope?: (join: number) => string,
+): number => {
+  let crossings = 0
   layer.cells.forEach((line, y) =>
     line.forEach((cell, x) => {
       const under = cellAt(canvas, x, y)
       if (cell.mask === 0 || !under || under.ch !== '') return
-      const isCrossing = (under.mask === 3 && cell.mask === 12) || (under.mask === 12 && cell.mask === 3)
-      under.mask = isCrossing ? 15 : cell.mask
+      const join = joins?.get(`${x},${y}`)
+      const isCrossing =
+        ((under.mask & 3) !== 0 && (under.mask & 12) === 0 && (cell.mask & 12) !== 0 && (cell.mask & 3) === 0) ||
+        ((under.mask & 12) !== 0 && (under.mask & 3) === 0 && (cell.mask & 3) !== 0 && (cell.mask & 12) === 0)
+      if (join !== undefined && under.mask !== 0 && under.join === join) under.mask |= cell.mask
+      else {
+        if (isCrossing) crossings++
+        under.mask = cell.mask
+      }
+      under.join = join
       under.color = style.color
       under.dim = style.dim
+      under.isHeavy = style.heavy
+      under.scope = join !== undefined && joinScope ? joinScope(join) : style.scope
       under.isRound = true
     }),
   )
+
+  return crossings
 }
 
 // A line through one row per column, as a wire: a level stretch runs flat and
@@ -317,22 +358,52 @@ const rowsAcross = (
 
 // ---------------------------------------------------------------- elements
 
+// While its group is hovered, a part of a picture turns bright and bold.
+// While its group is hovered, a wire turns bright. (A hover can restyle a
+// cell, not change its glyph: heavy strokes are for a clicked focus.)
+const LIT = { color: 'text', bold: true, dimColor: false }
+
 const styleOf = (style: Style): Record<string, unknown> => ({
   ...(style.color !== undefined && { color: style.color }),
   ...(style.bold === true && { bold: true }),
   ...(style.dim === true && { dimColor: true }),
+  ...(style.scope !== undefined && { hover: { scope: style.scope, ...LIT } }),
 })
+
+// Hover groups are named per card, so two cards never light each other.
+let scopeBase = 'sk'
+const scopeOf = (part: string | number): string => `${scopeBase}-${part}`.slice(0, 64)
+
+// The diagram being drawn: which of its nodes is focused, and the handler a
+// click on a node's name calls. Set by the render hook for each card.
+let focusNode: number | undefined
+let pressNode: (node: number) => void = () => undefined
+// Where the pulse along focused wires is, while it runs; undefined when still.
+let flowPhase: number | undefined
+
+const segOf = (ui: UI, seg: Seg): any => {
+  const text = (
+    <ui.Text {...styleOf(seg)} wrap="truncate-end">
+      {seg.text}
+    </ui.Text>
+  )
+  if (seg.press === undefined) return text
+  const node = seg.press
+  const press = pressNode
+
+  return (
+    <ui.Button key={scopeOf(`p${node}`)} plain onPress={() => press(node)}>
+      {text}
+    </ui.Button>
+  )
+}
 
 const rowOf = (ui: UI, row: Row): any =>
   row.segs.length === 0 ? (
     <ui.Text>{' '}</ui.Text>
   ) : (
     <ui.Box flexDirection="row" paddingLeft={row.indent}>
-      {row.segs.map(seg => (
-        <ui.Text {...styleOf(seg)} wrap="truncate-end">
-          {seg.text}
-        </ui.Text>
-      ))}
+      {row.segs.map(seg => segOf(ui, seg))}
     </ui.Box>
   )
 
@@ -387,6 +458,7 @@ type GraphNode = {
 }
 type GraphEdge = { from: number; to: number; label?: string; isReversed: boolean }
 type Graph = {
+  isNumbered: boolean
   title: string
   layout: 'flow' | 'matrix' | 'zones'
   nodes: GraphNode[]
@@ -455,6 +527,7 @@ const readGraph = (input: unknown): Graph | string => {
   return {
     title: words(raw.title, 80) ?? 'Diagram',
     layout: pick(raw.layout, ['flow', 'matrix', 'zones'] as const, 'flow'),
+    isNumbered: raw.numbers === true,
     nodes,
     edges,
     notes: wordList(raw.notes, 4, 120),
@@ -463,10 +536,12 @@ const readGraph = (input: unknown): Graph | string => {
 }
 
 type Slot = { rank: number; node?: number; x: number; w: number; order: number; ups: Slot[]; downs: Slot[] }
-type Link = { from: Slot; to: Slot; edge: number; isFirst: boolean; isLast: boolean; tx: number; bundle?: Bundle }
+// A link is one hop between ranks. Edges bound for the same node share the hops
+// through the ranks they skip, so `also` lists the other edges a hop carries.
+type Link = { from: Slot; to: Slot; edge: number; also: number[]; isFirst: boolean; isLast: boolean; tx: number; bundle?: Bundle }
 // The wires that leave one node downward travel as one: a trunk, a lane, and a
 // drop to each target, drawn in the node's color so a line can be followed.
-type Bundle = { from: Slot; isReversed: boolean; links: Link[]; sx: number; lane: number; color: string }
+type Bundle = { from: Slot; isReversed: boolean; links: Link[]; sx: number; lane: number; color: string; scope: string; isLit: boolean }
 
 const nodeColors = (graph: Graph): { colors: string[]; groups: { name: string; color: string }[] } => {
   const groups: { name: string; color: string }[] = []
@@ -559,16 +634,28 @@ const layoutGraph = (graph: Graph, room: number) => {
   for (let at = 0; at < ranks.length; at++) ranks[at] = ranks[at] ?? []
 
   const links: Link[] = []
+  const passes = new Map<string, Slot>()
   edges.forEach((edge, index) => {
     const first = slotOf[topOf(edge)]
     const last = slotOf[bottomOf(edge)]
     if (!first || !last) return
     let from = first
     for (let at = first.rank + 1; at <= last.rank; at++) {
-      const to = at === last.rank ? last : place({ rank: at, x: 0, w: 0, order: 0, ups: [], downs: [] })
-      links.push({ from, to, edge: index, isFirst: from === first, isLast: to === last, tx: 0 })
-      from.downs.push(to)
-      to.ups.push(from)
+      // Each edge keeps its own way through the ranks it skips: lit, its whole
+      // path shows, which a way shared with other edges could not.
+      const key = `${index}@${at}`
+      let to = at === last.rank ? last : passes.get(key)
+      if (!to) {
+        to = place({ rank: at, x: 0, w: 0, order: 0, ups: [], downs: [] })
+        passes.set(key, to)
+      }
+      const shared = links.find(link => link.from === from && link.to === to)
+      if (shared) shared.also.push(index)
+      else {
+        links.push({ from, to, edge: index, also: [], isFirst: from === first, isLast: to === last, tx: 0 })
+        from.downs.push(to)
+        to.ups.push(from)
+      }
       from = to
     }
   })
@@ -675,6 +762,28 @@ const layoutGraph = (graph: Graph, room: number) => {
   }
 
   const { colors, groups } = nodeColors(graph)
+  // Wires are colored by the node they leave, each such node its own color, so
+  // wires from nodes of one group can still be told apart.
+  // Numbers on nodes and arrows only when asked: a click and its moving
+  // pulse say which wire is which better than numbers do.
+  const isNumbered = graph.isNumbered
+  // With a node focused, its own wires keep their colors and the rest fade.
+  const focus = focusNode !== undefined && focusNode < nodes.length ? focusNode : undefined
+  const isLit = (edge: GraphEdge): boolean => focus === undefined || edge.from === focus || edge.to === focus
+  const isNear = (node: number): boolean =>
+    focus === undefined || node === focus || edges.some(edge => (edge.from === focus && edge.to === node) || (edge.to === focus && edge.from === node))
+  const numberOf: number[] = []
+  all
+    .filter(slot => slot.node !== undefined)
+    .sort((a, b) => a.rank - b.rank || a.x - b.x)
+    .forEach((slot, index) => {
+      numberOf[slot.node ?? 0] = index + 1
+    })
+  const wireColors: string[] = []
+  let sources = 0
+  nodes.forEach((_, node) => {
+    if (edges.some(edge => (edge.isReversed ? edge.to : edge.from) === node)) wireColors[node] = tint(sources++)
+  })
   const portOf = (slot: Slot, count: number, index: number): number =>
     slot.node === undefined
       ? slot.x
@@ -683,12 +792,18 @@ const layoutGraph = (graph: Graph, room: number) => {
   for (const link of links) {
     const edge = edges[link.edge]
     if (!edge) continue
+    // Grouped by source alone, never by focus, so a click changes colors and
+    // strokes but moves no wire.
     let bundle = bundles.find(one => one.from === link.from && one.isReversed === edge.isReversed)
     if (!bundle) {
-      bundle = { from: link.from, isReversed: edge.isReversed, links: [], sx: 0, lane: 0, color: colors[edge.from] ?? 'inactive' }
+      const isMerged = link.also.length > 0
+      const color = isMerged ? 'inactive' : (wireColors[topOf(edge)] ?? 'inactive')
+      const scope = scopeOf(isMerged ? bottomOf(edge) : topOf(edge))
+      bundle = { from: link.from, isReversed: edge.isReversed, links: [], sx: 0, lane: 0, color, scope, isLit: false }
       bundles.push(bundle)
     }
     bundle.links.push(link)
+    bundle.isLit ||= isLit(edge)
     link.bundle = bundle
   }
   for (const slot of all) {
@@ -761,10 +876,15 @@ const layoutGraph = (graph: Graph, room: number) => {
     const tall = tallOf(slot)
     if (slot.node === undefined) continue
     const node = nodes[slot.node]
-    const frame = FRAMES[node?.shape ?? 'box']
-    const border: Style = { color: colors[slot.node] }
+    const frame = slot.node === focus ? [...'┏━┓┃┗━┛┳┻'] : FRAMES[node?.shape ?? 'box']
+    const border: Style = {
+      color: slot.node === focus ? 'text' : isNear(slot.node) ? colors[slot.node] : 'subtle',
+      bold: slot.node === focus,
+      scope: scopeOf(slot.node),
+    }
     const inner = slot.w - 2
     put(canvas, slot.x, top, `${frame[0]}${(frame[1] ?? '─').repeat(inner)}${frame[2]}`, border)
+    if (isNumbered) put(canvas, slot.x + 1, top, String(numberOf[slot.node] ?? ''), { color: wireColors[slot.node] ?? colors[slot.node], bold: true, scope: border.scope })
     for (let y = top + 1; y < top + tall - 1; y++) {
       put(canvas, slot.x, y, frame[3] ?? '│', border)
       put(canvas, slot.x + 1, y, ' '.repeat(inner))
@@ -776,7 +896,17 @@ const layoutGraph = (graph: Graph, room: number) => {
       put(canvas, slot.x + 1 + ((inner - widthOf(cut)) >> 1), y, cut, style)
     }
     let line = top + 1
-    centred(node?.shape === 'person' ? `☺ ${node.label}` : (node?.label ?? ''), line++, { bold: true })
+    // The name's whole row inside the frame is one button, padding included,
+    // so a click anywhere across the middle of the box focuses the node.
+    const name = clip(node?.shape === 'person' ? `☺ ${node.label}` : (node?.label ?? ''), inner)
+    const before = (inner - widthOf(name)) >> 1
+    put(canvas, slot.x + 1, line++, ' '.repeat(before) + name + ' '.repeat(inner - before - widthOf(name)), {
+      ...(slot.node === focus && { color: 'claude' }),
+      bold: isNear(slot.node),
+      dim: !isNear(slot.node),
+      scope: border.scope,
+      press: slot.node,
+    })
     if (node?.note !== undefined) centred(node.note, line++, { dim: true })
     if (node && node.loops.length > 0) centred(`↺ ${node.loops.filter(loop => loop !== '').join(', ')}`.trim(), line++, border)
     if (node && node.rows.length > 0) {
@@ -797,46 +927,117 @@ const layoutGraph = (graph: Graph, room: number) => {
     arrow: (tops[at + 1] ?? 0) - 1,
   })
   // Longer spans first, so a short hop is drawn over a long haul it meets.
-  const drawOrder = [...bundles].sort((a, b) => reachOf(b)[1] - reachOf(b)[0] - (reachOf(a)[1] - reachOf(a)[0]))
+  // With a node focused, its wires go on last: they pass over every other
+  // wire in their own color, whole from end to end.
+  const drawOrder = [...bundles].sort(
+    (a, b) =>
+      Number(focus !== undefined && a.isLit) - Number(focus !== undefined && b.isLit) ||
+      reachOf(b)[1] - reachOf(b)[0] - (reachOf(a)[1] - reachOf(a)[0]),
+  )
   // A wire leaves from under its own node, which may end above the rank's last row.
   const startOf = (bundle: Bundle): number =>
     bundle.from.node === undefined ? rowsFor(bundle.from.rank).exit : (tops[bundle.from.rank] ?? 0) + tallOf(bundle.from)
-  for (const bundle of drawOrder) {
+  const arrivals = (slot: Slot): number => links.filter(link => link.to === slot).length
+  const linkLit = (link: Link): boolean => {
+    const edge = edges[link.edge]
+    return edge !== undefined && isLit(edge)
+  }
+  // With a node focused, each bundle draws as two passes over the same route:
+  // its other links faded, then its focused links, all of those last of all.
+  const draws = drawOrder.flatMap(bundle => {
+    if (focus === undefined) return [{ bundle, links: bundle.links, isFocused: false }]
+    const lit = bundle.links.filter(linkLit)
+    const faded = bundle.links.filter(link => !linkLit(link))
+    return [
+      ...(faded.length > 0 ? [{ bundle, links: faded, isFocused: false }] : []),
+      ...(lit.length > 0 ? [{ bundle, links: lit, isFocused: true }] : []),
+    ]
+  })
+  draws.sort((a, b) => Number(a.isFocused) - Number(b.isFocused))
+  let crossings = 0
+  for (const pass of draws) {
+    const { bundle, isFocused } = pass
     const { exit, arrow } = rowsFor(bundle.from.rank)
     const lane = exit + 1 + bundle.lane
     const start = startOf(bundle)
     const layer = makeCanvas(canvas.w, canvas.h)
-    const [left, right] = reachOf(bundle)
+    const xs = [bundle.sx, ...pass.links.map(link => link.tx)]
+    const [left, right] = [Math.min(...xs), Math.max(...xs)]
+    const isRouted = reachOf(bundle)[0] !== reachOf(bundle)[1]
+    const joins = new Map<string, number>()
+    for (const link of pass.links) {
+      if (arrivals(link.to) < 2) continue
+      const key = link.to.node ?? -1
+      for (let y = left === right ? start : lane; y <= arrow; y++) joins.set(`${link.tx},${y}`, key)
+      if (left !== right) for (let x = Math.min(link.tx, bundle.sx); x <= Math.max(link.tx, bundle.sx); x++) {
+        if (x === link.tx) joins.set(`${x},${lane}`, key)
+      }
+    }
     // A wire through a rank it skips runs down the slot kept for it.
-    for (const link of bundle.links) {
+    for (const link of pass.links) {
       if (link.to.node === undefined) {
         const top = tops[link.to.rank] ?? 0
         vline(layer, link.to.x, top - 1, top + (heights[link.to.rank] ?? 3))
       }
     }
-    if (left === right) vline(layer, bundle.sx, start, arrow)
+    // The route is the bundle's whatever the pass: a bundle that turns along a
+    // lane keeps that lane even for a pass whose own links run straight down.
+    if (!isRouted) vline(layer, bundle.sx, start, arrow)
     else {
       vline(layer, bundle.sx, start, lane)
-      hline(layer, lane, left, right)
-      for (const link of bundle.links) vline(layer, link.tx, lane, arrow)
+      if (left !== right) hline(layer, lane, left, right)
+      for (const link of pass.links) vline(layer, link.tx, lane, arrow)
     }
     wire(layer, bundle.sx, start, UP)
-    for (const link of bundle.links) wire(layer, link.tx, arrow, DOWN)
-    stamp(canvas, layer, { color: bundle.color })
+    for (const link of pass.links) wire(layer, link.tx, arrow, DOWN)
+    // A wire belongs wholly to the node it leaves, so hovering that node lights
+    // it end to end; the wires into a node show whole when it is clicked.
+    const color = focus !== undefined && !isFocused ? 'subtle' : bundle.color
+    crossings += stamp(canvas, layer, { color, scope: bundle.scope, heavy: isFocused }, joins)
+  }
+  // Along the focused wires, each cell's distance from where its wire leaves
+  // its node, walked through the wires' own joints.
+  if (focus !== undefined) {
+    const queue: [number, number, number][] = []
+    for (const bundle of bundles) {
+      if (bundle.isLit && bundle.from.node !== undefined) queue.push([bundle.sx, startOf(bundle), 0])
+    }
+    const steps: [number, number, number, number][] = [
+      [UP, 0, -1, DOWN],
+      [DOWN, 0, 1, UP],
+      [LEFT, -1, 0, RIGHT],
+      [RIGHT, 1, 0, LEFT],
+    ]
+    while (queue.length > 0) {
+      const [x, y, d] = queue.shift() ?? [0, 0, 0]
+      const cell = cellAt(canvas, x, y)
+      if (!cell || !cell.isHeavy || cell.ch !== '' || (cell.flow !== undefined && cell.flow <= d)) continue
+      cell.flow = d
+      for (const [bit, dx, dy, back] of steps) {
+        const near = cellAt(canvas, x + dx, y + dy)
+        // A wire is drawn in pieces, one per rank it crosses; where two meet,
+        // the joint may be recorded on one side only.
+        if (near?.isHeavy && ((cell.mask & bit) !== 0 || (near.mask & back) !== 0)) queue.push([x + dx, y + dy, d + 1])
+      }
+    }
   }
   for (const bundle of bundles) {
     const { arrow } = rowsFor(bundle.from.rank)
     const start = startOf(bundle)
     if (bundle.from.node !== undefined) {
-      const frame = FRAMES[nodes[bundle.from.node]?.shape ?? 'box']
-      put(canvas, bundle.sx, start - 1, frame[7] ?? '┬', { color: colors[bundle.from.node] })
-      if (bundle.isReversed) put(canvas, bundle.sx, start, '▲', { color: bundle.color, bold: true })
+      const frame = bundle.from.node === focus ? [...'┏━┓┃┗━┛┳┻'] : FRAMES[nodes[bundle.from.node]?.shape ?? 'box']
+      const mark = focus !== undefined && !bundle.isLit ? 'subtle' : bundle.color
+      put(canvas, bundle.sx, start - 1, frame[7] ?? '┬', { color: mark, scope: bundle.scope })
+      if (bundle.isReversed) put(canvas, bundle.sx, start, '▲', { color: mark, bold: true, scope: bundle.scope })
     }
     for (const link of bundle.links) {
       if (link.to.node === undefined) continue
-      if (!bundle.isReversed && link.isLast) put(canvas, link.tx, arrow, '▼', { color: bundle.color, bold: true })
+      if (!bundle.isReversed && link.isLast) {
+        const lit = focus === undefined || linkLit(link)
+        put(canvas, link.tx, arrow, '▼', { color: lit ? bundle.color : 'subtle', bold: lit, scope: bundle.scope })
+      }
       else {
-        const frame = FRAMES[nodes[link.to.node]?.shape ?? 'box']
+        const frame = link.to.node === focus ? [...'┏━┓┃┗━┛┳┻'] : FRAMES[nodes[link.to.node]?.shape ?? 'box']
         put(canvas, link.tx, arrow + 1, frame[8] ?? '┴', { color: colors[link.to.node] })
       }
     }
@@ -864,23 +1065,43 @@ const layoutGraph = (graph: Graph, room: number) => {
     }
   }
 
+  const arrivalsOfNode = (node: number): number => edges.filter(edge => (edge.isReversed ? edge.from : edge.to) === node).length
+  const labelled = new Set<number>()
   const loose: string[] = []
   for (const link of links) {
     const edge = edges[link.edge]
     const bundle = link.bundle
-    if (!bundle || edge?.label === undefined || !(edge.isReversed ? link.isFirst : link.isLast)) continue
-    const text = clip(edge.label, 18)
+    if (!bundle || !edge || !(edge.isReversed ? link.isFirst : link.isLast)) continue
+    // Into a node many wires reach, one label beside its arrow says who came,
+    // by number, with every wire's own label after.
+    const target = edge.isReversed ? edge.from : edge.to
+    const isShared = !edge.isReversed && arrivalsOfNode(target) > 1
+    if (isShared && labelled.has(target)) continue
+    labelled.add(target)
+    const into = links.filter(one => one.to === link.to && one.isLast).sort((a, b) => a.tx - b.tx)
+    const carried = isShared ? into.flatMap(one => [one.edge, ...one.also]) : [link.edge, ...link.also]
+    const rightmost = into[into.length - 1]?.tx ?? link.tx
+    const named = carried.map(index => edges[index]?.label).filter((label): label is string => label !== undefined)
+    const numbers =
+      isNumbered && isShared
+        ? carried
+            .map(index => numberOf[edges[index]?.from ?? 0] ?? 0)
+            .join('·')
+        : ''
+    if (named.length === 0 && numbers === '') continue
+    const label = [numbers, [...new Set(named)].join(', ')].filter(part => part !== '').join(' ')
+    const text = clip(label, 22)
     const size = widthOf(text)
     const { exit, arrow } = rowsFor(link.from.rank)
+    const leftmost = into[0]?.tx ?? link.tx
     const spots: [number, number][] = [
-      [link.tx + 2, arrow],
-      [link.tx - size - 1, arrow],
-      [bundle.sx + 2, exit],
-      [bundle.sx - size - 1, exit],
+      [(isShared ? rightmost : link.tx) + 2, arrow],
+      [(isShared ? leftmost : link.tx) - size - 1, arrow],
+      ...(isShared ? [] : ([[bundle.sx + 2, exit], [bundle.sx - size - 1, exit]] as [number, number][])),
     ]
     const spot = spots.find(([x, y]) => isFree(canvas, x, y, size))
-    if (spot) put(canvas, spot[0], spot[1], text, { color: bundle.color, dim: true })
-    else loose.push(`${nodes[edge.from]?.label ?? ''} → ${nodes[edge.to]?.label ?? ''}: ${edge.label}`)
+    if (spot) put(canvas, spot[0], spot[1], text, { color: !isNear(target) ? 'subtle' : numbers !== '' ? 'text' : bundle.color, dim: numbers === '', scope: isShared ? scopeOf(target) : bundle.scope })
+    else loose.push(`${nodes[edge.from]?.label ?? ''} → ${nodes[edge.to]?.label ?? ''}: ${label}`)
   }
 
   // The frames go on last and only into empty cells, so wires and labels read
@@ -905,7 +1126,7 @@ const layoutGraph = (graph: Graph, room: number) => {
     edge(x1, y1, '┘')
   }
 
-  return { rows: rowsOf(canvas), groups: isZoned ? [] : groups, loose, isTooWide: width > room }
+  return { rows: rowsOf(canvas), groups: isZoned ? [] : groups, loose, isTooWide: width > room, crossings, wireColors, isNumbered, numberOf }
 }
 
 // Who depends on whom as a grid: clearer than wires once almost everything
@@ -951,15 +1172,49 @@ const drawMatrix = (ui: UI, graph: Graph, room: number): any => {
 const drawDiagram = (ui: UI, graph: Graph, room: number): any => {
   if (graph.layout === 'matrix') return [...drawMatrix(ui, graph, room), ...notesOf(ui, graph.notes)]
   const laid = layoutGraph(graph, room)
+  // Past a handful of crossings a reader stops following wires, so every
+  // connection is also written out under the picture. Each name there is a
+  // button too: a click focuses that node, as a click on its box does.
+  const isDense = laid.crossings >= 8
+  const press = pressNode
+  const listing = isDense
+    ? graph.nodes
+        .map((node, index) => ({ node, index, to: graph.edges.filter(edge => edge.from === index) }))
+        .filter(one => one.to.length > 0)
+        .sort((a, b) => (laid.numberOf[a.index] ?? 0) - (laid.numberOf[b.index] ?? 0))
+        .map(one => (
+          <ui.Box flexDirection="row" columnGap={1}>
+            <ui.Button key={scopeOf(`l${one.index}`)} plain onPress={() => press(one.index)}>
+              <ui.Text
+                bold
+                color={focusNode === one.index ? 'claude' : (laid.wireColors[one.index] ?? 'text')}
+                hover={{ scope: scopeOf(one.index), ...LIT }}
+                wrap="truncate-end"
+              >
+                {`${focusNode === one.index ? '▶ ' : ''}${laid.isNumbered ? `${laid.numberOf[one.index] ?? ''} ` : ''}${one.node.label}`}
+              </ui.Text>
+            </ui.Button>
+            <ui.Text dimColor>→</ui.Text>
+            <ui.Text wrap="wrap">
+              {[...one.to]
+                .sort((a, b) => (laid.numberOf[a.to] ?? 0) - (laid.numberOf[b.to] ?? 0))
+                .map(edge => `${laid.isNumbered ? `${laid.numberOf[edge.to] ?? ''} ` : ''}${graph.nodes[edge.to]?.label ?? ''}${edge.label === undefined ? '' : ` (${edge.label})`}`)
+                .join(', ')}
+            </ui.Text>
+          </ui.Box>
+        ))
+    : []
 
   return [
     ...drawRows(ui, laid.rows),
     legendOf(ui, laid.groups.map(group => group.name), laid.groups.map(group => group.color), 1),
-    ...laid.loose.slice(0, 8).map(line => (
-      <ui.Text dimColor wrap="truncate-end">
-        {line}
-      </ui.Text>
-    )),
+    ...(isDense
+      ? listing
+      : laid.loose.slice(0, 8).map(line => (
+          <ui.Text dimColor wrap="truncate-end">
+            {line}
+          </ui.Text>
+        ))),
     ...notesOf(ui, graph.notes),
   ]
 }
@@ -1139,7 +1394,7 @@ const readSchema = (input: unknown): Graph | string => {
     edges.push({ from, to, label, isReversed: false })
   }
 
-  return { title: words(raw.title, 80) ?? 'Schema', layout: 'flow', nodes, edges, notes: wordList(raw.notes, 4, 120), dropped }
+  return { title: words(raw.title, 80) ?? 'Schema', layout: 'flow', isNumbered: false, nodes, edges, notes: wordList(raw.notes, 4, 120), dropped }
 }
 
 // ---------------------------------------------------------------- swimlane
@@ -2868,6 +3123,7 @@ const KINDS: Kind[] = [
         ),
         edges: list(shape({ from: text('node id'), to: text('node id'), label: text('what travels, one or two words') }, ['from', 'to'])),
         notes: list(text(), 'key decisions or risks, 4 at most'),
+        numbers: { type: 'boolean', description: 'number the nodes and mark each arrow with the numbers of its sources; off by default' },
         layout: { type: 'string', enum: ['flow', 'zones', 'matrix'], description: 'flow (default): boxes and wires. zones: each group is a framed band, stacked in the order the groups first appear, for boundaries such as a VPC, a subsystem or a C4 container view. matrix: a grid of who depends on whom, for dependencies too dense for wires' },
       },
       ['title', 'nodes', 'edges'],
@@ -3164,6 +3420,16 @@ const GUIDE = [
   'The person sees the card, not the tool result, so never repeat a card in text. Keep labels short: a card is for scanning, and detail belongs in a follow-up when asked. Draw only what is true: no invented numbers, nodes or quotes to fill a card.',
 ].join('\n')
 
+// Which node each diagram card has focused, by tool_use_id (see types/).
+// The tag changes when the value's meaning does, so old values are dropped.
+const picked = atom({ plugin: 'sketch', key: 'picked' } as const, {} as Picked, { shape: 'picked-1' })
+
+// The pulse along focused wires steps on this tick; it runs for FLOW_MS after
+// the last click, then stops, so a card left focused stops redrawing.
+const tick = atom({ plugin: 'sketch', key: 'tick' } as const, 0)
+const FLOW_MS = 30_000
+let lastPress = 0
+
 // How far each running card's entrance has played, 0 to 1, by tool_use_id.
 const entrances = new Map<string, number>()
 const STEPS = 7
@@ -3172,6 +3438,9 @@ const roomOf = (columns: number | undefined): number => Math.max(40, Math.min(co
 
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    $.clock.every(150, () => {
+      if (Date.now() - lastPress < FLOW_MS + 300) void update($, tick, n => ((n ?? 0) + 1) % 600)
+    })
     for (const kind of KINDS) {
       await $.tool.register({
         name: kind.name,
@@ -3263,6 +3532,27 @@ export const register: Register = on => {
     if (typeof model === 'string') return next(e)
 
     const ui: UI = $.ui.resolve(e)
+    const card = String(e.props.tool_use_id ?? '')
+    // Every read before any module-wide setting, so two cards drawn at once
+    // never mix: from here to the end the draw runs without yielding.
+    const focused = (await read($, picked))[card]
+    const phase = focused !== undefined && Date.now() - lastPress < FLOW_MS ? await read($, tick) : undefined
+    scopeBase = `sk${card.slice(-20)}`
+    focusNode = focused
+    flowPhase = phase
+    pressNode = node => {
+      lastPress = Date.now()
+      void update($, picked, all => {
+        const chosen = { ...all }
+        if (chosen[card] === node) delete chosen[card]
+        else chosen[card] = node
+        // Only the last few cards keep a focus.
+        const keys = Object.keys(chosen)
+        for (const old of keys.slice(0, Math.max(0, keys.length - 40))) delete chosen[old]
+
+        return chosen
+      })
+    }
     const played =
       kind.isAnimated === true && e.props.isRunning === true
         ? (entrances.get(String(e.props.tool_use_id)) ?? 0.04)

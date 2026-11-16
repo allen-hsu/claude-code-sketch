@@ -8,6 +8,19 @@ English | [繁體中文](README.zh-TW.md)
 
 ![A layered architecture card](docs/images/en/layers.png)
 
+## Diagrams you can explore
+
+A dense diagram stays readable because you can ask it about one node at a time:
+
+![Hovering and clicking nodes in a diagram](docs/images/en/interaction.gif)
+
+- **Hover** a node: every wire leaving it lights up, end to end.
+- **Click** a node's name (anywhere across the middle of its box, or its name in the list under a dense picture): its wires in and out turn thick, sit on top of everything else, and a pulse runs along them from source to target; the rest fades. Click it again to clear it, or click another node to move the focus. Each card keeps its own focus.
+- Every node's wires have their own color, and where two wires cross, the later one simply passes over the earlier: no junction marks that could be mistaken for a connection.
+- Past a handful of crossings, every connection is also written out under the picture.
+
+Hover and click need a terminal that reports the mouse to Claude Code (the fullscreen renderer). The pulse runs for 30 seconds after the last click and then stops, leaving the thick lines; it redraws the focused card a few times a second while it runs.
+
 ## Install
 
 At the prompt of a Claude Code terminal session:
@@ -54,7 +67,7 @@ The cards below are drawn from the made-up inputs in [`preview/samples.en.ts`](p
 
 ## Architecture and structure
 
-`layers` shows what a system is made of. `diagram` shows how it connects: wires leaving a node travel together in that node's color, loops are drawn with an upward arrow, and a node's shape says what it is (decision, store, external system).
+`layers` shows what a system is made of. `diagram` shows how it connects: each node's wires have their own color, an edge that loops back is drawn with an upward arrow, and a node's shape says what it is (decision, store, external system). `numbers: true` numbers the nodes and marks each arrow with where it comes from.
 
 ![System wiring](docs/images/en/diagram.png)
 
@@ -124,6 +137,10 @@ Zones in `layers` can hold zones of their own, which covers deployment topologie
 
 ## Numbers
 
+Charts, metric tiles, timelines and journeys draw themselves in while Claude's call runs:
+
+![A line chart drawing itself in](docs/images/en/entrance.gif)
+
 ![Metric tiles](docs/images/en/metrics.png)
 
 ![Line chart](docs/images/en/chart-line.png)
@@ -149,7 +166,7 @@ Zones in `layers` can hold zones of their own, which covers deployment topologie
 The whole mod is one hooks module, [`hooks/register.tsx`](hooks/register.tsx):
 
 - At session start it registers the 17 tools. Each takes plain structured input (nodes and edges, periods and items, labels and series).
-- A `ui.render` hook replaces each tool call's row in the transcript with the card, drawn from the call's own input. The mod keeps no state.
+- A `ui.render` hook replaces each tool call's row in the transcript with the card, drawn from the call's own input. Hover groups light a node's wires with no code running; node names are buttons, and the one piece of state the mod keeps is which node each diagram card has focused (declared in [`types/index.d.ts`](types/index.d.ts)), plus the tick the pulse steps on.
 - A `prompt.compose` hook adds one short section to the system prompt telling Claude when to reach for which card and to keep the text around it brief.
 - Charts, metrics, timelines and journeys play a half-second entrance while the call runs.
 - Press `ctrl+o` to see the raw tool call behind a card.
@@ -163,7 +180,7 @@ Things to know:
 
 ## About the images
 
-The images in this README are not window screenshots. They are produced by the scripts in [`preview/`](preview): `render.ts` runs the mod's real hooks against a stand-in engine with a small flex layout of its own, and `paint.py` paints the resulting cells with the default dark theme's colors. Layout in your terminal comes from Claude Code's own engine and your theme, so spacing and colors can differ slightly.
+The images in this README are not window screenshots. They are produced by the scripts in [`preview/`](preview): `render.ts` runs the mod's real hooks against a stand-in engine with a small flex layout of its own, and `paint.py` paints the resulting cells with the default dark theme's colors. `frames.ts` renders the animations frame by frame from the same hooks; in them, the hovered state is drawn as the terminal draws it, without a pointer. Layout in your terminal comes from Claude Code's own engine and your theme, so spacing and colors can differ slightly.
 
 To regenerate them (macOS, needs [Bun](https://bun.sh) and Python with Pillow; use `samples.zh-TW.ts` and `docs/images/zh-TW` for the Chinese set):
 
@@ -171,6 +188,9 @@ To regenerate them (macOS, needs [Bun](https://bun.sh) and Python with Pillow; u
 cd preview
 bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic render.ts ../hooks/register.tsx 110 cards.json ./samples.en.ts
 python3 paint.py cards.json ../docs/images/en
+bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic frames.ts ../hooks/register.tsx 110 ./samples.en.ts anim
+SKETCH_GIF_SCALE=0.55 python3 paint.py anim-interaction.frames.json ../docs/images/en/interaction.gif
+python3 paint.py anim-entrance.frames.json ../docs/images/en/entrance.gif
 ```
 
 ## Develop

@@ -42,7 +42,7 @@ def blend(color, toward, amount):
 
 
 LIGHT = {'─': 'LR', '│': 'UD', '┌': 'DR', '┐': 'DL', '└': 'UR', '┘': 'UL', '├': 'UDR', '┤': 'UDL', '┬': 'DLR', '┴': 'ULR', '┼': 'UDLR'}
-HEAVY = {'━': 'LR', '┃': 'UD', '┏': 'DR', '┓': 'DL', '┗': 'UR', '┛': 'UL'}
+HEAVY = {'━': 'LR', '┃': 'UD', '┏': 'DR', '┓': 'DL', '┗': 'UR', '┛': 'UL', '┣': 'UDR', '┫': 'UDL', '┳': 'DLR', '┻': 'ULR', '╋': 'UDLR'}
 ROUND = {'╭': (1, 1, 180, 270), '╮': (-1, 1, 270, 360), '╰': (1, -1, 90, 180), '╯': (-1, -1, 0, 90)}
 LEFT_PART = {'▉': 7, '▊': 6, '▋': 5, '▌': 4, '▍': 3, '▎': 2, '▏': 1}
 LOW_PART = {'▁': 1, '▂': 2, '▃': 3, '▄': 4, '▅': 5, '▆': 6, '▇': 7}
@@ -139,7 +139,8 @@ def sorted_box(x1, y1, x2, y2):
     return [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
 
 
-def paint(card, path):
+def paint(card, path, lit=''):
+    """Paints one card; cells of the hover group `lit` are drawn as hovered."""
     lines = card['lines']
     cols = max((sum(cell[1] for cell in line) for line in lines), default=1)
     width, height = cols * CW + 2 * PAD, len(lines) * CH + 2 * PAD
@@ -149,9 +150,11 @@ def paint(card, path):
     for row, line in enumerate(lines):
         col = 0
         y = PAD + row * CH
-        for ch, wide, fg, flags in line:
+        for ch, wide, fg, flags, *rest in line:
             x = PAD + col * CW
             col += wide
+            if lit and rest and rest[0] == lit:
+                fg, flags = 'text', (flags | 1) & ~2
             color = THEME.get(fg, FG) if fg else FG
             if flags & 2:
                 color = blend(color, BG, 0.45)
@@ -174,9 +177,30 @@ def paint(card, path):
                 draw.text((x + (wide * CW - advance) / 2, y + round(CH * 0.74)), ch, font=font, fill=color, anchor='ls')
             if flags & 8:
                 draw.rectangle([x, y + CH - 5, x + wide * CW - 1, y + CH - 4], fill=color)
+    if path is None:
+        return image
     image.save(path)
     return width, height
 
+
+if __name__ != '__main__':
+    pass
+elif sys.argv[1].endswith('.frames.json'):
+    # An animation: frames.ts wrote [{ card, ms, lit }], painted into one GIF.
+    frames = json.load(open(sys.argv[1], encoding='utf-8'))
+    images = [paint(frame['card'], None, frame.get('lit', '')) for frame in frames]
+    width = max(image.width for image in images)
+    height = max(image.height for image in images)
+    scale = float(os.environ.get('SKETCH_GIF_SCALE', '0.6'))
+    size = (round(width * scale), round(height * scale))
+    stills = []
+    for image in images:
+        canvas = Image.new('RGB', (width, height), (36, 36, 40))
+        canvas.paste(image, (0, 0), image)
+        stills.append(canvas.resize(size, Image.LANCZOS).convert('P', palette=Image.ADAPTIVE, colors=64))
+    stills[0].save(sys.argv[2], save_all=True, append_images=stills[1:], duration=[frame['ms'] for frame in frames], loop=0, optimize=True, disposal=2)
+    print(sys.argv[2], len(stills), 'frames', size)
+    sys.exit(0)
 
 cards = json.load(open(sys.argv[1], encoding='utf-8'))
 os.makedirs(sys.argv[2], exist_ok=True)

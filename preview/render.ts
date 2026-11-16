@@ -2,6 +2,24 @@
 // as a grid of styled cells (JSON), for paint.py to turn into images.
 // usage: bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic render.ts ../hooks/register.tsx 110 cards.json ./samples.en.ts
 
+// The engine's state helpers, stood in for. A value set in `stateFor` (by
+// frames.ts: a focused node, the pulse's tick) is what a read finds;
+// otherwise the initial value, so nothing is focused.
+export const stateFor: Record<string, unknown> = {}
+Bun.plugin({
+  name: 'claude-code stand-in',
+  setup(build) {
+    build.module('claude-code', () => ({
+      exports: {
+        atom: (ref: unknown, initial: unknown) => ({ ref, initial }),
+        read: async (_$: unknown, atom: { ref: { key: string }; initial: unknown }) =>
+          atom.ref.key in stateFor ? stateFor[atom.ref.key] : atom.initial,
+        update: async () => undefined,
+      },
+      loader: 'object',
+    }))
+  },
+})
 const g = globalThis as any
 g.h = (type: any, props: any, ...children: any[]) => ({
   type,
@@ -9,7 +27,8 @@ g.h = (type: any, props: any, ...children: any[]) => ({
   children: children.flat(Infinity).filter((c: any) => c !== false && c !== null && c !== undefined && c !== true),
 })
 
-type Cell = { ch: string; w: number; fg?: string; bold?: boolean; dim?: boolean; inv?: boolean; ul?: boolean }
+// `sc` is the hover group a cell belongs to, so a frame can show it lit.
+type Cell = { ch: string; w: number; fg?: string; bold?: boolean; dim?: boolean; inv?: boolean; ul?: boolean; sc?: string }
 type Line = Cell[]
 type Block = { lines: Line[]; width: number }
 
@@ -59,10 +78,11 @@ const truncate = (line: Line, width: number): Line => {
 
 const BORDERS: Record<string, string> = { round: '╭╮╰╯─│', single: '┌┐└┘─│', bold: '┏┓┗┛━┃', double: '╔╗╚╝═║' }
 
-const layout = (node: any, avail: number, stretch?: number): Block => {
+export const layout = (node: any, avail: number, stretch?: number): Block => {
   const p = node.props
+  if (node.type === 'Button') return layout({ type: 'Box', props: { flexDirection: 'row' }, children: node.children }, avail, stretch)
   if (node.type === 'Text') {
-    const style = { fg: p.color, bold: p.bold, dim: p.dimColor, inv: p.inverse, ul: p.underline }
+    const style = { fg: p.color, bold: p.bold, dim: p.dimColor, inv: p.inverse, ul: p.underline, sc: p.hover?.scope }
     const line = cells(node.children.join(''), style)
     const lines = p.wrap === 'wrap' ? wrap(line, avail) : [truncate(line, Math.max(1, avail))]
     return { lines, width: Math.max(...lines.map(widthOf)) }
@@ -144,14 +164,27 @@ const layout = (node: any, avail: number, stretch?: number): Block => {
   return { lines, width: typeof p.width === 'number' ? p.width : box + padL + padR }
 }
 
-const hooks: { event: string; matcher: any; fn: any }[] = []
-const on = (event: string, a: any, b?: any) => {
-  hooks.push({ event, matcher: b ? a : undefined, fn: b ?? a })
-  return { catch: () => undefined }
+// One card as JSON cells: [char, width, color, flags, hover group].
+export const cellsOf = (lines: Line[]) =>
+  lines.map(line => line.map(cell => [cell.ch, cell.w, cell.fg ?? '', (cell.bold ? 1 : 0) | (cell.dim ? 2 : 0) | (cell.inv ? 4 : 0) | (cell.ul ? 8 : 0), cell.sc ?? '']))
+
+// Loads the mod against a stand-in engine; answers its hooks.
+export const loadMod = async (path: string) => {
+  const hooks: { event: string; matcher: any; fn: any }[] = []
+  const on = (event: string, a: any, b?: any) => {
+    hooks.push({ event, matcher: b ? a : undefined, fn: b ?? a })
+    return { catch: () => undefined }
+  }
+  const mod = await import(path)
+  mod.register(on)
+  return hooks
 }
-const mod = await import(process.argv[2]!)
-mod.register(on)
-const $ = { ui: { resolve: () => ({ Box: 'Box', Text: 'Text' }) } }
+
+export const engine = { ui: { resolve: () => ({ Box: 'Box', Text: 'Text', Button: 'Button' }), invalidate: () => undefined }, state: { get: async () => ({}), set: async () => ({}) } }
+
+if (import.meta.main) {
+const hooks = await loadMod(process.argv[2]!)
+const $ = engine
 const columns = Number(process.argv[3] ?? 110)
 const samples: Record<string, any[]> = (await import(process.argv[5] ?? './samples.en.ts')).samples
 const render = hooks.find(hook => hook.event === 'ui.render' && hook.matcher?.component === 'ToolUse')!.fn
@@ -159,6 +192,8 @@ const out: any[] = []
 for (const [name, inputs] of Object.entries(samples)) {
   let index = 0
   for (const input of inputs) {
+    // A sample made for an animation is drawn by frames.ts instead.
+    if (input.demo !== undefined) continue
     const tool = `mcp__sketch__${name.split('#')[0]}`
     const tree = await render($, { props: { tool, input, isRunning: false, tool_use_id: 't' }, viewport: { columns } }, async () => undefined)
     if (!tree) continue
@@ -169,9 +204,10 @@ for (const [name, inputs] of Object.entries(samples)) {
       tool: name.split('#')[0],
       kind: input.kind ?? input.layout ?? '',
       title: input.title ?? input.question ?? '',
-      lines: lines.map(line => line.map(cell => [cell.ch, cell.w, cell.fg ?? '', (cell.bold ? 1 : 0) | (cell.dim ? 2 : 0) | (cell.inv ? 4 : 0) | (cell.ul ? 8 : 0)])),
+      lines: cellsOf(lines),
     })
   }
 }
 await Bun.write(process.argv[4]!, JSON.stringify(out))
 console.log(`${out.length} cards → ${process.argv[4]}`)
+}

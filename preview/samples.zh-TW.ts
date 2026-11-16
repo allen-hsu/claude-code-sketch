@@ -389,6 +389,30 @@ export const samples: Record<string, any[]> = {
       ],
     },
   ],
+  'diagram#interactive': [
+    {
+      title: '服務地圖：滑鼠停留看出去的線，點擊聚焦',
+      demo: { hover: ['web', 'orders'], click: ['orders', 'pg'] },
+      nodes: [
+        { id: 'web', label: '網站' },
+        { id: 'mobile', label: '手機 App' },
+        { id: 'admin', label: '後台' },
+        { id: 'gw', label: 'API gateway' },
+        { id: 'orders', label: '訂單' },
+        { id: 'pay', label: '金流' },
+        { id: 'stock', label: '庫存' },
+        { id: 'search', label: '搜尋' },
+        { id: 'pg', label: 'Postgres', shape: 'store' },
+        { id: 'redis', label: 'Redis', shape: 'store' },
+        { id: 'kafka', label: 'Kafka', shape: 'store' },
+      ],
+      edges: [
+        ['web', 'gw'], ['mobile', 'gw'], ['admin', 'gw'], ['admin', 'pg'], ['gw', 'orders'], ['gw', 'search'], ['gw', 'stock'],
+        ['orders', 'pay'], ['orders', 'pg'], ['orders', 'kafka'], ['orders', 'redis'], ['pay', 'pg'], ['pay', 'kafka'],
+        ['stock', 'pg'], ['stock', 'redis'], ['search', 'redis'], ['search', 'kafka'], ['gw', 'redis'],
+      ].map(([from, to]) => ({ from, to })),
+    },
+  ],
   compare: [
     {
       question: '要用哪個資料庫？',

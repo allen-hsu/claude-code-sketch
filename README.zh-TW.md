@@ -8,6 +8,19 @@
 
 ![分層架構卡片](docs/images/zh-TW/layers.png)
 
+## 可以互動的架構圖
+
+線再多的圖也看得懂，因為你可以一次只看一個節點：
+
+![在架構圖上停留與點擊節點](docs/images/zh-TW/interaction.gif)
+
+- **滑鼠停留**在節點上：從它出去的每條線都會從頭到尾亮起來。
+- **點擊**節點名稱（框中間那一整排都可以點，線很多時圖下清單裡的名稱也可以）：它進出的線變粗、壓在最上層，還會有一段亮光從起點流向終點；其他線變淡。再點一次取消，點別的節點就切換過去。每張卡片各自記住聚焦哪個節點。
+- 每個節點的線各有自己的顏色。兩條線交叉時，後畫的直接疊在上面，不畫接點，所以不會誤以為兩條線是相連的。
+- 交叉一多，圖下也會用文字列出每一條連線。
+
+滑鼠停留和點擊需要終端機把滑鼠位置回報給 Claude Code（全螢幕介面）。流動效果在最後一次點擊 30 秒後停止，粗線保留；流動期間每秒會重畫那張卡片幾次。
+
 ## 安裝
 
 在 Claude Code 終端機的提示列輸入：
@@ -54,7 +67,7 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 
 ## 架構與結構
 
-`layers` 呈現系統由什麼組成。`diagram` 呈現它們怎麼連接：從同一個節點出發的線會合併成一束，並使用該節點的顏色；迴圈會以向上的箭頭表示；節點的形狀代表它的角色（判斷、儲存、外部系統）。
+`layers` 呈現系統由什麼組成。`diagram` 呈現它們怎麼連接：每個節點的線各有自己的顏色；往回連的線以向上的箭頭表示；節點的形狀代表它的角色（判斷、儲存、外部系統）。加上 `numbers: true` 會替節點編號，並在箭頭旁標出來源。
 
 ![系統連線](docs/images/zh-TW/diagram.png)
 
@@ -124,6 +137,10 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 
 ## 數字
 
+圖表、指標方塊、時間軸和旅程圖，在 Claude 呼叫工具的過程中會逐步畫出來：
+
+![逐步畫出的折線圖](docs/images/zh-TW/entrance.gif)
+
 ![指標方塊](docs/images/zh-TW/metrics.png)
 
 ![折線圖](docs/images/zh-TW/chart-line.png)
@@ -149,7 +166,7 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 整個 mod 只有一個 hooks 模組：[`hooks/register.tsx`](hooks/register.tsx)。
 
 - session 開始時註冊 17 個工具。每個工具吃的都是單純的結構化輸入（節點與連線、時段與項目、標籤與數列）。
-- 一個 `ui.render` hook 把每次工具呼叫在對話裡的那一列換成卡片，內容直接取自該次呼叫的輸入。mod 不保存任何狀態。
+- 一個 `ui.render` hook 把每次工具呼叫在對話裡的那一列換成卡片，內容直接取自該次呼叫的輸入。滑鼠停留的高亮由介面直接處理，不用跑程式；節點名稱是按鈕。mod 唯一保存的狀態，是每張架構圖卡片聚焦哪個節點（宣告在 [`types/index.d.ts`](types/index.d.ts)），以及流動效果用的計時。
 - 一個 `prompt.compose` hook 在系統提示裡加一小段，告訴 Claude 什麼情況用哪種卡片，並把卡片周圍的文字寫短。
 - 圖表、指標、時間軸、旅程圖在呼叫進行時會播放約半秒的進場動畫。
 - 按 `ctrl+o` 可以看到卡片背後原始的工具呼叫。
@@ -163,7 +180,7 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 
 ## 關於這些圖片
 
-這份說明裡的圖片不是視窗截圖，而是由 [`preview/`](preview) 裡的腳本產生的：`render.ts` 用一個替身引擎和它自己的簡易版面配置，執行 mod 真正的 hooks；`paint.py` 再用預設深色主題的顏色把結果畫成圖片。你終端機裡的版面來自 Claude Code 自己的引擎和你的主題，所以間距和顏色可能略有不同。
+這份說明裡的圖片不是視窗截圖，而是由 [`preview/`](preview) 裡的腳本產生的：`render.ts` 用一個替身引擎和它自己的簡易版面配置，執行 mod 真正的 hooks；`paint.py` 再用預設深色主題的顏色把結果畫成圖片。你終端機裡的版面來自 Claude Code 自己的引擎和你的主題，所以間距和顏色可能略有不同。動畫則由 `frames.ts` 用同一套 hooks 逐格產生；GIF 裡的「滑鼠停留」是照終端機的畫法呈現高亮效果，畫面上沒有游標。
 
 重新產生圖片（macOS，需要 [Bun](https://bun.sh) 和裝有 Pillow 的 Python）：
 
@@ -171,6 +188,9 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 cd preview
 bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic render.ts ../hooks/register.tsx 110 cards.json ./samples.zh-TW.ts
 python3 paint.py cards.json ../docs/images/zh-TW
+bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic frames.ts ../hooks/register.tsx 110 ./samples.zh-TW.ts anim
+SKETCH_GIF_SCALE=0.55 python3 paint.py anim-interaction.frames.json ../docs/images/zh-TW/interaction.gif
+python3 paint.py anim-entrance.frames.json ../docs/images/zh-TW/entrance.gif
 ```
 
 英文版請改用 `samples.en.ts` 和 `docs/images/en`。
