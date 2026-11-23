@@ -27,6 +27,7 @@ Hover and click need a terminal that reports the mouse to Claude Code (the fulls
 At the prompt of a Claude Code terminal session:
 
 ```
+/plugin marketplace add allen-hsu/claude-code-sketch
 /plugin install sketch --marketplace allen-hsu/claude-code-sketch
 ```
 
