@@ -35,7 +35,7 @@
 | --- | --- |
 | ![存下來的圖片版圖表](docs/images/zh-TW/export-chart.png) | ![存下來的架構圖](docs/images/zh-TW/export-diagram.png) |
 
-產生 PNG 時，有安裝 `rsvg-convert`（librsvg）就用它；沒有的 Mac 改用內建的 `qlmanage` 和 `sips`；兩者都沒有時只會存 SVG。放進剪貼簿在 macOS 用 `osascript`，在 Linux 用 `wl-copy` 或 `xclip`。
+產生 PNG 時，有安裝 `rsvg-convert`（librsvg）就用它；沒有的 Mac 改用內建的 `sips`；兩者都不能用時只會存 SVG，提示訊息會說明（執行 `brew install librsvg` 之後就能產生 PNG）。放進剪貼簿在 macOS 用 `osascript`，在 Linux 用 `wl-copy` 或 `xclip`；Copy 沒辦法放進剪貼簿時，提示訊息會說明原因和檔案存在哪裡。
 
 ## 安裝
 

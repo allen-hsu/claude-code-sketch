@@ -1,6 +1,6 @@
 // Presses Save PNG on two sample cards, as a person would, and copies the
 // pictures it writes into docs/images: what Copy image puts on the clipboard.
-// Needs rsvg-convert (or macOS's qlmanage and sips) like the button itself.
+// Needs rsvg-convert (or macOS's sips) like the button itself.
 // usage: bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic exports.ts ../hooks/register.tsx ./samples.en.ts ../docs/images/en
 import { mkdtempSync, readdirSync, copyFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'

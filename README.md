@@ -35,7 +35,7 @@ Copy saves the same two files too. The picture is drawn whole, title included, i
 | --- | --- |
 | ![A saved picture chart](docs/images/en/export-chart.png) | ![A saved architecture card](docs/images/en/export-diagram.png) |
 
-Making the PNG uses `rsvg-convert` (librsvg) when it is installed, and on a Mac without it the built-in `qlmanage` and `sips`; with neither, only the SVG is saved. The clipboard is reached with `osascript` on macOS, and `wl-copy` or `xclip` on Linux.
+Making the PNG uses `rsvg-convert` (librsvg) when it is installed, and on a Mac without it the built-in `sips`; with neither, only the SVG is saved and the message says so (`brew install librsvg` adds the PNG). The clipboard is reached with `osascript` on macOS, and `wl-copy` or `xclip` on Linux; when Copy cannot reach it, the message says why and where the file was saved.
 
 ## Install
 

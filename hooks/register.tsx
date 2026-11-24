@@ -3256,11 +3256,12 @@ const drawImageChart = (ui: UI, chart: Chart, room: number, played: number): any
 
 // ---------------------------------------------------------------- chart export
 // Every card carries two buttons at its top right: Copy image and Save PNG. For a
-// picture chart either one draws the whole chart as SVG, title, ticks, labels and legend included (the
-// picture in the terminal has no font, so its text is drawn beside it), saves
-// it under ~/Downloads/sketch with a PNG twice its size, and Copy puts that PNG
-// on the clipboard. The PNG comes from rsvg-convert where it is installed, else
-// from macOS's own qlmanage and sips; the SVG is kept either way.
+// picture chart either one draws the whole chart as SVG, title, ticks, labels
+// and legend included (the picture in the terminal has no font, so its text is
+// drawn beside it), saves it under ~/Downloads/sketch with a PNG twice its
+// size, and Copy puts that PNG on the clipboard. The PNG comes from
+// rsvg-convert where it is installed, else from macOS's own sips; the SVG is
+// kept either way.
 
 const hexOf = (key: string): string => `#${rgbOf(key).map(part => part.toString(16).padStart(2, '0')).join('')}`
 const xml = (text: string): string =>
@@ -3408,27 +3409,75 @@ const runs = async ($: any, argv: string[]): Promise<boolean> => {
   }
 }
 
-const toPng = async ($: any, svgPath: string, pngPath: string, width: number, height: number): Promise<boolean> => {
+// Runs a command for what it prints; undefined when it cannot start or fails.
+const outputOf = async ($: any, argv: string[]): Promise<string | undefined> => {
+  try {
+    const done = await $.process.run(argv, { timeoutMs: 20_000 })
+    return done.exitCode === 0 ? String(done.stdout ?? '') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// The same picture with its width and height doubled: the viewBox is kept, so
+// a converter that draws at the SVG's own size draws it at twice the pixels.
+const svgScaled = (svg: string, width: number, height: number): string =>
+  svg.replace(
+    `width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"`,
+    `width="${width * 2}" height="${height * 2}" viewBox="0 0 ${width} ${height}"`,
+  )
+
+// Whether a PNG came out at the size asked for: a converter that crops or
+// scales on its own is caught here rather than handing over half a picture.
+const isSized = async ($: any, pngPath: string, width: number, height: number): Promise<boolean> => {
+  const shown = (await outputOf($, ['sips', '-g', 'pixelWidth', '-g', 'pixelHeight', pngPath])) ?? ''
+  const w = Number(/pixelWidth:\s*(\d+)/.exec(shown)?.[1])
+  const h = Number(/pixelHeight:\s*(\d+)/.exec(shown)?.[1])
+  return Math.abs(w - width) <= 2 && Math.abs(h - height) <= 2
+}
+
+// SVG to a PNG at twice the size: rsvg-convert where it is installed, and on a
+// Mac without it sips, which reads SVG itself (given a copy at twice the size,
+// so the text stays sharp). Not Quick Look: its thumbnails shift and crop the
+// picture by its shape, and a cut picture is worse than none.
+const toPng = async ($: any, svgPath: string, pngPath: string, drawn: { svg: string; width: number; height: number }): Promise<boolean> => {
   for (const bin of ['rsvg-convert', '/opt/homebrew/bin/rsvg-convert', '/usr/local/bin/rsvg-convert', '/usr/bin/rsvg-convert']) {
     if (await runs($, [bin, '-z', '2', '-o', pngPath, svgPath])) return true
   }
-  // macOS without rsvg-convert: Quick Look renders the SVG into a square
-  // thumbnail, picture at the top, and sips cuts it back to the chart's shape.
-  const dir = svgPath.slice(0, svgPath.lastIndexOf('/'))
-  const thumb = `${svgPath}.png`
-  if (await runs($, ['qlmanage', '-t', '-s', String(width * 2), '-o', dir, svgPath])) {
-    const isCut = await runs($, ['sips', '-c', String(height * 2), String(width * 2), '--cropOffset', '0', '0', thumb, '--out', pngPath])
-    await runs($, ['rm', '-f', thumb])
-    return isCut
+  const { svg, width, height } = drawn
+  const scaledPath = `${svgPath.slice(0, -4)}.2x.svg`
+  try {
+    await $.fs.write(scaledPath, svgScaled(svg, width, height))
+    if ((await runs($, ['sips', '-s', 'format', 'png', scaledPath, '--out', pngPath])) && (await isSized($, pngPath, width * 2, height * 2))) return true
+    await runs($, ['rm', '-f', pngPath])
+    return false
+  } finally {
+    await runs($, ['rm', '-f', scaledPath])
   }
-  return false
 }
 
-const toClipboard = async ($: any, pngPath: string): Promise<boolean> =>
-  (await runs($, ['osascript', '-e', `set the clipboard to (read (POSIX file "${pngPath}") as «class PNGf»)`])) ||
-  (await runs($, ['sh', '-c', 'wl-copy --type image/png < "$1"', 'sh', pngPath])) ||
-  (await runs($, ['xclip', '-selection', 'clipboard', '-t', 'image/png', '-i', pngPath]))
+// Puts the PNG on the clipboard; undefined when it took, else why not.
+const toClipboard = async ($: any, pngPath: string): Promise<string | undefined> => {
+  const tries: string[][] = [
+    ['osascript', '-e', `set the clipboard to (read (POSIX file "${pngPath}") as «class PNGf»)`],
+    ['sh', '-c', 'wl-copy --type image/png < "$1"', 'sh', pngPath],
+    ['xclip', '-selection', 'clipboard', '-t', 'image/png', '-i', pngPath],
+  ]
+  let reason = 'no clipboard tool found'
+  for (const argv of tries) {
+    try {
+      const done = await $.process.run(argv, { timeoutMs: 20_000 })
+      if (done.exitCode === 0) return undefined
+      // The first tool that ran says why; later ones are usually just absent.
+      if (reason === 'no clipboard tool found') reason = `${argv[0]}: ${String(done.stderr ?? '').trim().split('\n')[0] || `exit ${done.exitCode}`}`
+    } catch {
+      // Not installed here: try the next one.
+    }
+  }
+  return reason
+}
 
+// A file name's time part: 20261124-154911.
 const stampOf = (date: Date): string => {
   const two = (n: number): string => String(n).padStart(2, '0')
   return `${date.getFullYear()}${two(date.getMonth() + 1)}${two(date.getDate())}-${two(date.getHours())}${two(date.getMinutes())}${two(date.getSeconds())}`
@@ -3446,19 +3495,21 @@ const exportSvg = async ($: any, drawn: { svg: string; width: number; height: nu
         .slice(0, 60) || 'chart'
     const base = `${home}/Downloads/sketch/${slug}-${stampOf(new Date())}`
     await $.fs.write(`${base}.svg`, drawn.svg)
-    const hasPng = await toPng($, `${base}.svg`, `${base}.png`, drawn.width, drawn.height)
+    const hasPng = await toPng($, `${base}.svg`, `${base}.png`, drawn)
     if (!hasPng) {
-      $.ui.toast(`Saved ${shown(base)}.svg (no SVG-to-PNG converter found: install librsvg for PNG)`, { timeoutMs: 8000 })
+      $.ui.toast(`${isCopy ? 'Copy failed: no PNG could be made' : 'Saved only the SVG'} (for PNG: brew install librsvg) · ${shown(base)}.svg`, { timeoutMs: 12000 })
       return
     }
     if (!isCopy) {
       $.ui.toast(`Saved ${shown(base)}.png (and .svg)`, { timeoutMs: 6000 })
       return
     }
-    const isCopied = await toClipboard($, `${base}.png`)
+    const failure = await toClipboard($, `${base}.png`)
     $.ui.toast(
-      isCopied ? `Image copied · also saved ${shown(base)}.png` : `Could not reach the clipboard · saved ${shown(base)}.png`,
-      { timeoutMs: 6000 },
+      failure === undefined
+        ? `Copied to the clipboard: paste it anywhere · file in ${shown(base)}.png`
+        : `Copy failed (${failure.slice(0, 120)}) · the file is saved: ${shown(base)}.png`,
+      { timeoutMs: failure === undefined ? 6000 : 12000 },
     )
   } catch (error) {
     $.ui.toast(`Could not save the picture: ${error instanceof Error ? error.message : String(error)}`, { timeoutMs: 8000 })
