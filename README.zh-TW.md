@@ -42,6 +42,7 @@
 在 Claude Code 終端機的提示列輸入：
 
 ```
+/plugin marketplace add allen-hsu/claude-code-sketch
 /plugin install sketch --marketplace allen-hsu/claude-code-sketch
 ```
 
