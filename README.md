@@ -22,6 +22,21 @@ A dense diagram stays readable because you can ask it about one node at a time:
 
 Hover and click need a terminal that reports the mouse to Claude Code (the fullscreen renderer). The pulse runs for 30 seconds after the last click and then stops, leaving the thick lines; it redraws the focused card a few times a second while it runs.
 
+## Copy or save any card
+
+Every card has two buttons at its top right:
+
+- **⧉ Copy image** puts a picture of the card on the clipboard, ready to paste into Slack, a doc or a slide.
+- **⤓ Save PNG** saves the picture under `~/Downloads/sketch/`, as a PNG at twice the size and as an SVG.
+
+Copy saves the same two files too. The picture is drawn whole, title included, in the dark theme's colors: a picture chart is drawn again from its numbers with its ticks, labels and legend, and every other card is laid out cell by cell as the terminal shows it, with its lines drawn as strokes so they join cleanly.
+
+| A picture chart, saved | An architecture card, saved |
+| --- | --- |
+| ![A saved picture chart](docs/images/en/export-chart.png) | ![A saved architecture card](docs/images/en/export-diagram.png) |
+
+Making the PNG uses `rsvg-convert` (librsvg) when it is installed, and on a Mac without it the built-in `qlmanage` and `sips`; with neither, only the SVG is saved. The clipboard is reached with `osascript` on macOS, and `wl-copy` or `xclip` on Linux.
+
 ## Install
 
 At the prompt of a Claude Code terminal session:
@@ -143,6 +158,8 @@ Charts, metric tiles, timelines and journeys draw themselves in while Claude's c
 
 ![A line chart drawing itself in](docs/images/en/entrance.gif)
 
+With `style: "image"`, a line, scatter, column or histogram chart draws its plot as a real picture, with smooth lines, translucent areas and rounded bars, in terminals that show images (kitty, Ghostty, iTerm2; elsewhere a line of alt text stands in). Ticks and the legend stay text beside it, since a picture in the terminal has no font. The saved picture above is one of these.
+
 ![Metric tiles](docs/images/en/metrics.png)
 
 ![Line chart](docs/images/en/chart-line.png)
@@ -172,6 +189,7 @@ The whole mod is one hooks module, [`hooks/register.tsx`](hooks/register.tsx):
 - A `prompt.compose` hook adds one short section to the system prompt telling Claude when to reach for which card and to keep the text around it brief.
 - Charts, metrics, timelines and journeys draw themselves in over about a second while the call runs.
 - Press `ctrl+o` to see the raw tool call behind a card.
+- Copy and Save write `~/Downloads/sketch/` and run the converter and clipboard commands above; nothing else on your machine is written or run.
 
 Things to know:
 
@@ -193,6 +211,7 @@ python3 paint.py cards.json ../docs/images/en
 bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic frames.ts ../hooks/register.tsx 110 ./samples.en.ts anim
 SKETCH_GIF_SCALE=0.55 python3 paint.py anim-interaction.frames.json ../docs/images/en/interaction.gif
 python3 paint.py anim-entrance.frames.json ../docs/images/en/entrance.gif
+bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic exports.ts ../hooks/register.tsx ./samples.en.ts ../docs/images/en
 ```
 
 ## Develop

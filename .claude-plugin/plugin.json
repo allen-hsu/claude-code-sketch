@@ -1,7 +1,7 @@
 {
   "name": "sketch",
-  "version": "0.2.2",
-  "description": "Claude draws diagrams, charts, roadmaps, journeys and wireframes as cards in the transcript instead of writing paragraphs; diagrams light up on hover and focus on click",
+  "version": "0.3.0",
+  "description": "Claude draws diagrams, charts, roadmaps, journeys and wireframes as cards in the transcript instead of writing paragraphs; diagrams light up on hover and focus on click, charts can be real pictures, and any card copies or saves as an image",
   "author": {
     "name": "allen-hsu"
   },

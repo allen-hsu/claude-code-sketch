@@ -22,6 +22,21 @@
 
 滑鼠停留和點擊需要終端機把滑鼠位置回報給 Claude Code（全螢幕介面）。流動效果在最後一次點擊 30 秒後停止，粗線保留；流動期間每秒會重畫那張卡片幾次。
 
+## 複製或儲存任何卡片
+
+每張卡片的右上角都有兩個按鈕：
+
+- **⧉ Copy image**：把卡片的圖片放進剪貼簿，可以直接貼到 Slack、文件或簡報。
+- **⤓ Save PNG**：把圖片存到 `~/Downloads/sketch/`，一份兩倍大小的 PNG，一份 SVG。
+
+按 Copy 也會同時存這兩個檔案。存下來的是完整的一張圖，包括標題，使用深色主題的配色：圖片版圖表會用資料重畫，刻度、標籤和圖例都在圖裡；其他卡片則照終端機的樣子一格一格排出來，線條畫成真正的線段，轉角和接點都是連起來的。
+
+| 存下來的圖片版圖表 | 存下來的架構圖 |
+| --- | --- |
+| ![存下來的圖片版圖表](docs/images/zh-TW/export-chart.png) | ![存下來的架構圖](docs/images/zh-TW/export-diagram.png) |
+
+產生 PNG 時，有安裝 `rsvg-convert`（librsvg）就用它；沒有的 Mac 改用內建的 `qlmanage` 和 `sips`；兩者都沒有時只會存 SVG。放進剪貼簿在 macOS 用 `osascript`，在 Linux 用 `wl-copy` 或 `xclip`。
+
 ## 安裝
 
 在 Claude Code 終端機的提示列輸入：
@@ -142,6 +157,8 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 
 ![逐步畫出的折線圖](docs/images/zh-TW/entrance.gif)
 
+加上 `style: "image"`，折線圖、散佈圖、直條圖和直方圖的圖表本體會畫成真正的圖片：平滑的線、半透明的面積、圓角長條。這需要終端機支援顯示圖片（kitty、Ghostty、iTerm2），不支援時只會顯示一行替代文字。刻度和圖例仍以文字畫在旁邊，因為終端機裡的圖片沒有字型。上面那張存下來的圖就是這種圖表。
+
 ![指標方塊](docs/images/zh-TW/metrics.png)
 
 ![折線圖](docs/images/zh-TW/chart-line.png)
@@ -171,6 +188,7 @@ claude plugin install sketch --marketplace allen-hsu/claude-code-sketch
 - 一個 `prompt.compose` hook 在系統提示裡加一小段，告訴 Claude 什麼情況用哪種卡片，並把卡片周圍的文字寫短。
 - 圖表、指標、時間軸、旅程圖在呼叫進行時，會用大約一秒逐步畫出來。
 - 按 `ctrl+o` 可以看到卡片背後原始的工具呼叫。
+- Copy 和 Save 只會寫入 `~/Downloads/sketch/`，並執行上面提到的轉檔和剪貼簿指令；不會寫入或執行你電腦上的其他東西。
 
 需要知道的事：
 
@@ -192,6 +210,7 @@ python3 paint.py cards.json ../docs/images/zh-TW
 bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic frames.ts ../hooks/register.tsx 110 ./samples.zh-TW.ts anim
 SKETCH_GIF_SCALE=0.55 python3 paint.py anim-interaction.frames.json ../docs/images/zh-TW/interaction.gif
 python3 paint.py anim-entrance.frames.json ../docs/images/zh-TW/entrance.gif
+bun --jsx-factory=h --jsx-fragment=Fragment --jsx-runtime=classic exports.ts ../hooks/register.tsx ./samples.zh-TW.ts ../docs/images/zh-TW
 ```
 
 英文版請改用 `samples.en.ts` 和 `docs/images/en`。

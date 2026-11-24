@@ -28,7 +28,7 @@ import type { Picked } from '../types'
 
 const toolOf = (name: string): string => `mcp__sketch__${name}`
 
-type UI = { Box: any; Text: any; Button?: any }
+type UI = { Box: any; Text: any; Button?: any; Image?: any }
 // `scope` names a hover group: everything drawn with one lights up together
 // while the pointer rests on any of it (the fullscreen terminal reports it).
 // `press` makes the text a button that focuses that node of a diagram.
@@ -454,11 +454,22 @@ const fittedTwo = (text: string, width: number, scope?: string): { lines: [strin
   return { lines, scope: group }
 }
 
-const frameOf = (ui: UI, title: string, body: any): any => (
+const frameOf = (ui: UI, title: string, body: any, actions?: any, width?: number): any => (
   <ui.Box flexDirection="column" marginTop={1}>
-    <ui.Text bold color="claude">
-      {`◆ ${title}`}
-    </ui.Text>
+    {actions === undefined ? (
+      <ui.Text bold color="claude">
+        {`◆ ${title}`}
+      </ui.Text>
+    ) : (
+      <ui.Box flexDirection="row" justifyContent="space-between" columnGap={2} {...(width !== undefined && { width })}>
+        <ui.Box flexShrink={1}>
+          <ui.Text bold color="claude" wrap="truncate-end">
+            {`◆ ${title}`}
+          </ui.Text>
+        </ui.Box>
+        <ui.Box flexShrink={0}>{actions}</ui.Box>
+      </ui.Box>
+    )}
     {body}
     {details.length > 0 && (
       <ui.Box position="relative" height={2} flexDirection="row">
@@ -2578,6 +2589,8 @@ type Chart = {
   yLabel?: string
   bins: number
   edges?: [string, string]
+  // 'image': the plot as a picture, where the kind has one (see IMAGE_KINDS).
+  style: 'text' | 'image'
 }
 
 const EIGHTHS = ['', '▏', '▎', '▍', '▌', '▋', '▊', '▉']
@@ -2635,6 +2648,7 @@ const readChart = (input: unknown): Chart | string => {
     yLabel: words(raw.yLabel, 30),
     bins: 0,
     edges,
+    style: pick(raw.style, ['text', 'image'] as const, 'text'),
   }
 }
 
@@ -2980,6 +2994,7 @@ const drawShare = (ui: UI, chart: Chart, room: number, played: number): any => {
 }
 
 const drawChart = (ui: UI, chart: Chart, room: number, played: number): any => {
+  if (chart.style === 'image' && ui.Image !== undefined && IMAGE_KINDS.includes(chart.kind)) return drawImageChart(ui, chart, room, played)
   if (chart.kind === 'bar' || chart.kind === 'stacked') return drawBars(ui, chart, room, played)
   if (chart.kind === 'column' || chart.kind === 'histogram') return drawColumns(ui, chart, room, played)
   if (chart.kind === 'line' || chart.kind === 'scatter') return drawPlot(ui, chart, room, played)
@@ -2987,6 +3002,801 @@ const drawChart = (ui: UI, chart: Chart, room: number, played: number): any => {
   if (chart.kind === 'funnel') return drawFunnel(ui, chart, room, played)
 
   return drawShare(ui, chart, room, played)
+}
+
+// ---------------------------------------------------------------- image charts
+// With `style: "image"`, a chart's plot is a real picture: anti-aliased lines,
+// translucent areas, round points and soft gridlines, drawn here pixel by
+// pixel and shown with the terminal's image protocol (kitty, Ghostty, iTerm2).
+// Axis labels and the legend stay text: a picture has no font. Where the
+// terminal cannot show pictures, the picture's alt text stands in.
+
+// The theme colors the text cards use, as the default dark theme paints them.
+const RGB: Record<string, [number, number, number]> = {
+  claude: [215, 119, 87],
+  suggestion: [177, 185, 249],
+  success: [78, 186, 101],
+  warning: [255, 193, 7],
+  bashBorder: [253, 93, 177],
+  planMode: [72, 150, 140],
+  autoAccept: [175, 135, 255],
+  error: [255, 107, 128],
+  inactive: [153, 153, 153],
+}
+const rgbOf = (key: string): [number, number, number] => RGB[key] ?? [210, 212, 217]
+
+// Pixels per terminal cell: cells are about twice as tall as wide.
+const CELL_W = 8
+const CELL_H = 16
+
+type Pixels = { w: number; h: number; data: Uint8Array }
+
+const makePixels = (w: number, h: number): Pixels => ({ w, h, data: new Uint8Array(w * h * 4) })
+
+// Lays `color` at `alpha` (0 to 1) over the pixel, the picture staying
+// transparent where nothing is drawn, so the terminal's own background shows.
+const blend = (px: Pixels, x: number, y: number, [r, g, b]: [number, number, number], alpha: number): void => {
+  if (x < 0 || y < 0 || x >= px.w || y >= px.h || alpha <= 0) return
+  const at = (y * px.w + x) * 4
+  const below = (px.data[at + 3] ?? 0) / 255
+  const out = alpha + below * (1 - alpha)
+  if (out <= 0) return
+  const mix = (top: number, under: number): number => Math.round((top * alpha + under * below * (1 - alpha)) / out)
+  px.data[at] = mix(r, px.data[at] ?? 0)
+  px.data[at + 1] = mix(g, px.data[at + 1] ?? 0)
+  px.data[at + 2] = mix(b, px.data[at + 2] ?? 0)
+  px.data[at + 3] = Math.round(Math.min(1, out) * 255)
+}
+
+// A line of `width` pixels with soft edges: each pixel near it is covered by
+// how far inside the stroke it lies.
+const strokeLine = (px: Pixels, x1: number, y1: number, x2: number, y2: number, width: number, color: [number, number, number], alpha = 1): void => {
+  const half = width / 2
+  const left = Math.floor(Math.min(x1, x2) - half - 1)
+  const right = Math.ceil(Math.max(x1, x2) + half + 1)
+  const top = Math.floor(Math.min(y1, y2) - half - 1)
+  const bottom = Math.ceil(Math.max(y1, y2) + half + 1)
+  const dx = x2 - x1
+  const dy = y2 - y1
+  const length = dx * dx + dy * dy
+  for (let y = top; y <= bottom; y++) {
+    for (let x = left; x <= right; x++) {
+      const t = length === 0 ? 0 : Math.max(0, Math.min(1, ((x + 0.5 - x1) * dx + (y + 0.5 - y1) * dy) / length))
+      const distance = Math.hypot(x + 0.5 - (x1 + t * dx), y + 0.5 - (y1 + t * dy))
+      blend(px, x, y, color, alpha * Math.max(0, Math.min(1, half + 0.5 - distance)))
+    }
+  }
+}
+
+const fillCircle = (px: Pixels, cx: number, cy: number, radius: number, color: [number, number, number], alpha = 1): void => {
+  for (let y = Math.floor(cy - radius - 1); y <= Math.ceil(cy + radius + 1); y++) {
+    for (let x = Math.floor(cx - radius - 1); x <= Math.ceil(cx + radius + 1); x++) {
+      const distance = Math.hypot(x + 0.5 - cx, y + 0.5 - cy)
+      blend(px, x, y, color, alpha * Math.max(0, Math.min(1, radius + 0.5 - distance)))
+    }
+  }
+}
+
+// A bar with rounded top corners.
+const fillBar = (px: Pixels, x1: number, y1: number, x2: number, y2: number, radius: number, color: [number, number, number]): void => {
+  for (let y = Math.floor(y1); y < Math.ceil(y2); y++) {
+    for (let x = Math.floor(x1); x < Math.ceil(x2); x++) {
+      let coverage = 1
+      const corner = (cx: number, cy: number): void => {
+        const distance = Math.hypot(x + 0.5 - cx, y + 0.5 - cy)
+        coverage = Math.min(coverage, Math.max(0, Math.min(1, radius + 0.5 - distance)))
+      }
+      if (y + 0.5 < y1 + radius && x + 0.5 < x1 + radius) corner(x1 + radius, y1 + radius)
+      if (y + 0.5 < y1 + radius && x + 0.5 > x2 - radius) corner(x2 - radius, y1 + radius)
+      const edge = Math.min(1, x + 1 - x1, x2 - x, y + 1 - y1)
+      blend(px, x, y, color, coverage * Math.max(0, edge))
+    }
+  }
+}
+
+const base64Of = (bytes: Uint8Array): string => {
+  const native = (bytes as unknown as { toBase64?: () => string }).toBase64
+  if (typeof native === 'function') return native.call(bytes)
+  let text = ''
+  for (let at = 0; at < bytes.length; at += 0x8000) text += String.fromCharCode(...bytes.subarray(at, at + 0x8000))
+  return btoa(text)
+}
+
+// Which chart kinds have a picture form.
+const IMAGE_KINDS: readonly ChartKind[] = ['line', 'scatter', 'column', 'histogram']
+
+const drawImageChart = (ui: UI, chart: Chart, room: number, played: number): any => {
+  const columns = clamp(room - AXIS - 2, 20, 120)
+  const rows = chart.kind === 'scatter' ? 12 : 11
+  const px = makePixels(columns * CELL_W, rows * CELL_H)
+  // Room for a point's radius on every side, so none is cut at an edge.
+  const pad = { left: 9, right: 10, top: 10, bottom: 7 }
+  const plotW = px.w - pad.left - pad.right
+  const plotH = px.h - pad.top - pad.bottom
+  const grid = rgbOf('inactive')
+  // Soft gridlines at the quarters, a firmer baseline.
+  for (let step = 0; step <= 4; step++) {
+    const y = Math.round(pad.top + (plotH * step) / 4) + 0.5
+    strokeLine(px, pad.left, y, px.w - pad.right, y, 1, grid, step === 4 ? 0.45 : 0.14)
+  }
+
+  let high = 0
+  let low = 0
+  let marks: [number, string][] = []
+  const legend: { name: string; color: string }[] = []
+
+  if (chart.kind === 'scatter') {
+    const xs = chart.points.map(point => point.x)
+    const ys = chart.points.map(point => point.y)
+    const [x0, x1] = [Math.min(...xs), Math.max(...xs)]
+    ;[low, high] = [Math.min(...ys), Math.max(...ys)]
+    const sx = (x: number): number => pad.left + ((x - x0) / (x1 - x0 || 1)) * plotW
+    const sy = (y: number): number => pad.top + (1 - (y - low) / (high - low || 1)) * plotH
+    // The least-squares line behind the points.
+    const count = chart.points.length
+    const meanX = xs.reduce((sum, x) => sum + x, 0) / count
+    const meanY = ys.reduce((sum, y) => sum + y, 0) / count
+    const spreadX = xs.reduce((sum, x) => sum + (x - meanX) ** 2, 0)
+    const together = chart.points.reduce((sum, point) => sum + (point.x - meanX) * (point.y - meanY), 0)
+    if (count >= 3 && spreadX > 0) {
+      const slope = together / spreadX
+      strokeLine(px, sx(x0), sy(meanY + slope * (x0 - meanX)), sx(x1), sy(meanY + slope * (x1 - meanX)), 2, rgbOf('suggestion'), 0.45 * played)
+    }
+    chart.points.slice(0, Math.ceil(count * played)).forEach(point => {
+      fillCircle(px, sx(point.x), sy(point.y), 4.5, rgbOf('claude'), 0.85)
+    })
+    marks = [
+      [0, fmt(x0)],
+      [columns, fmt(x1)],
+      [columns >> 1, chart.xLabel === undefined ? '' : `${chart.xLabel} →`],
+    ]
+  } else if (chart.kind === 'line') {
+    const all = chart.series.flatMap(series => series.values)
+    ;[low, high] = [Math.min(...all), Math.max(...all)]
+    const count = Math.max(...chart.series.map(series => series.values.length))
+    const sx = (index: number): number => pad.left + (index / Math.max(1, count - 1)) * plotW
+    const sy = (value: number): number => pad.top + (1 - (value - low) / (high - low || 1)) * plotH
+    const reach = (count - 1) * played
+    chart.series.forEach((series, at) => {
+      const color = rgbOf(tint(at))
+      legend.push({ name: series.name, color: tint(at) })
+      const shown: [number, number][] = []
+      series.values.forEach((value, index) => {
+        if (index <= reach) shown.push([sx(index), sy(value)])
+        else if (index - 1 < reach) {
+          const before = series.values[index - 1] ?? value
+          const part = reach - (index - 1)
+          shown.push([sx(index - 1 + part), sy(before + (value - before) * part)])
+        }
+      })
+      // A translucent area under the line, fading toward the baseline.
+      for (let x = Math.floor(shown[0]?.[0] ?? 0); x <= Math.ceil(shown[shown.length - 1]?.[0] ?? 0); x++) {
+        const segment = shown.findIndex((point, index) => index > 0 && point[0] >= x)
+        const a = shown[segment - 1]
+        const b = shown[segment]
+        if (!a || !b) continue
+        const yLine = a[1] + ((b[1] - a[1]) * (x - a[0])) / (b[0] - a[0] || 1)
+        for (let y = Math.ceil(yLine); y < pad.top + plotH; y++) {
+          blend(px, x, y, color, (chart.series.length > 1 ? 0.07 : 0.16) * (1 - (y - yLine) / (pad.top + plotH - yLine + 1)))
+        }
+      }
+      shown.forEach((point, index) => {
+        const next = shown[index + 1]
+        if (next) strokeLine(px, point[0], point[1], next[0], next[1], 3, color)
+      })
+      series.values.forEach((value, index) => {
+        if (index <= reach) {
+          fillCircle(px, sx(index), sy(value), 4.5, color)
+          fillCircle(px, sx(index), sy(value), 2, [24, 26, 30])
+        }
+      })
+    })
+    marks =
+      count <= 10
+        ? Array.from({ length: count }, (_, index) => [Math.round(((sx(index) - 0) / px.w) * columns), labelAt(chart, index)])
+        : [
+            [0, labelAt(chart, 0)],
+            [columns, labelAt(chart, count - 1)],
+            [columns >> 1, labelAt(chart, (count - 1) >> 1)],
+          ]
+  } else {
+    const count = Math.max(...chart.series.map(series => series.values.length))
+    high = Math.max(1e-9, ...chart.series.flatMap(series => series.values))
+    low = 0
+    const group = plotW / count
+    const gap = Math.max(2, group * (chart.kind === 'histogram' ? 0.08 : 0.28))
+    const each = (group - gap) / chart.series.length
+    chart.series.forEach((series, at) => {
+      legend.push({ name: series.name, color: tint(at) })
+      series.values.forEach((value, index) => {
+        const height = (Math.max(0, value) / high) * plotH * played
+        const x1 = pad.left + index * group + gap / 2 + at * each
+        fillBar(px, x1, pad.top + plotH - height, x1 + each - 1, pad.top + plotH, Math.min(5, each / 3), rgbOf(tint(at)))
+      })
+    })
+    marks = chart.edges
+      ? [
+          [0, `${chart.edges[0]}${chart.unit}`],
+          [columns, `${chart.edges[1]}${chart.unit}`],
+        ]
+      : Array.from({ length: count }, (_, index) => [
+          Math.round(((pad.left + (index + 0.5) * group) / px.w) * columns),
+          clip(labelAt(chart, index), Math.max(1, Math.floor((group / px.w) * columns) - 1)),
+        ])
+  }
+
+  const unit = chart.edges ? '' : chart.unit
+  const tick = (value: number): string => `${fmt(value)}${unit}`
+  const axis = Array.from({ length: rows }, (_, row) =>
+    row === 0 ? tick(high) : row === rows - 1 ? tick(low) : row === rows >> 1 ? tick((low + high) / 2) : ' ',
+  )
+  const alt = `${chart.kind} chart: ${chart.title}`
+
+  return [
+    chart.kind === 'scatter' && chart.yLabel !== undefined && <ui.Text dimColor>{`↑ ${chart.yLabel}`}</ui.Text>,
+    <ui.Box flexDirection="row">
+      <ui.Box flexDirection="column" width={AXIS} flexShrink={0}>
+        {axis.map(label => (
+          <ui.Box justifyContent="flex-end">
+            <ui.Text dimColor wrap="truncate-end">
+              {label}
+            </ui.Text>
+          </ui.Box>
+        ))}
+      </ui.Box>
+      <ui.Box marginLeft={1}>
+        <ui.Image key={scopeOf('chart')} source={{ rgba: base64Of(px.data), width: px.w, height: px.h }} columns={columns} rows={rows} alt={alt} />
+      </ui.Box>
+    </ui.Box>,
+    ...floorOf(ui, columns, marks).slice(1),
+    legendOf(ui, legend.map(one => one.name), legend.map(one => one.color)),
+  ]
+}
+
+
+// ---------------------------------------------------------------- chart export
+// Every card carries two buttons at its top right: Copy image and Save PNG. For a
+// picture chart either one draws the whole chart as SVG, title, ticks, labels and legend included (the
+// picture in the terminal has no font, so its text is drawn beside it), saves
+// it under ~/Downloads/sketch with a PNG twice its size, and Copy puts that PNG
+// on the clipboard. The PNG comes from rsvg-convert where it is installed, else
+// from macOS's own qlmanage and sips; the SVG is kept either way.
+
+const hexOf = (key: string): string => `#${rgbOf(key).map(part => part.toString(16).padStart(2, '0')).join('')}`
+const xml = (text: string): string =>
+  text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+const FONT = "-apple-system, BlinkMacSystemFont, 'PingFang TC', 'Noto Sans CJK TC', 'Microsoft JhengHei', 'Helvetica Neue', Arial, sans-serif"
+const round1 = (value: number): string => (Math.round(value * 10) / 10).toString()
+
+const chartSvg = (chart: Chart): { svg: string; width: number; height: number } => {
+  const width = 960
+  const legendNames =
+    chart.kind === 'scatter' ? [] : chart.series.length > 1 ? chart.series.map(series => series.name) : []
+  const height = legendNames.length > 0 ? 470 : 440
+  const box = { left: 84, right: width - 36, top: 84, bottom: 360 }
+  const plotW = box.right - box.left
+  const plotH = box.bottom - box.top
+  const parts: string[] = []
+  const text = (x: number, y: number, body: string, attrs: string): void => {
+    parts.push(`<text x="${round1(x)}" y="${round1(y)}" ${attrs}>${xml(body)}</text>`)
+  }
+  parts.push(`<rect width="${width}" height="${height}" rx="18" fill="#17191d"/>`)
+  text(32, 50, `◆ ${chart.title}`, `font-size="22" font-weight="600" fill="${hexOf('claude')}"`)
+
+  let low = 0
+  let high = 0
+  const unit = chart.edges ? '' : chart.unit
+  const ticks = (): void => {
+    for (let step = 0; step <= 4; step++) {
+      const y = box.top + (plotH * step) / 4
+      const value = high - ((high - low) * step) / 4
+      parts.push(
+        `<line x1="${box.left}" y1="${round1(y)}" x2="${box.right}" y2="${round1(y)}" stroke="#999999" stroke-opacity="${step === 4 ? 0.5 : 0.16}" stroke-width="1"/>`,
+      )
+      text(box.left - 12, y + 5, `${fmt(value)}${unit}`, `font-size="14" fill="#8a8d93" text-anchor="end"`)
+    }
+  }
+  const below = (x: number, body: string, anchor = 'middle'): void =>
+    text(x, box.bottom + 30, body, `font-size="14" fill="#8a8d93" text-anchor="${anchor}"`)
+
+  if (chart.kind === 'scatter') {
+    const xs = chart.points.map(point => point.x)
+    const ys = chart.points.map(point => point.y)
+    const [x0, x1] = [Math.min(...xs), Math.max(...xs)]
+    ;[low, high] = [Math.min(...ys), Math.max(...ys)]
+    ticks()
+    const sx = (x: number): number => box.left + 10 + ((x - x0) / (x1 - x0 || 1)) * (plotW - 20)
+    const sy = (y: number): number => box.top + (1 - (y - low) / (high - low || 1)) * plotH
+    const count = chart.points.length
+    const meanX = xs.reduce((sum, x) => sum + x, 0) / count
+    const meanY = ys.reduce((sum, y) => sum + y, 0) / count
+    const spreadX = xs.reduce((sum, x) => sum + (x - meanX) ** 2, 0)
+    const together = chart.points.reduce((sum, point) => sum + (point.x - meanX) * (point.y - meanY), 0)
+    if (count >= 3 && spreadX > 0) {
+      const slope = together / spreadX
+      parts.push(
+        `<line x1="${round1(sx(x0))}" y1="${round1(sy(meanY + slope * (x0 - meanX)))}" x2="${round1(sx(x1))}" y2="${round1(sy(meanY + slope * (x1 - meanX)))}" stroke="${hexOf('suggestion')}" stroke-opacity="0.55" stroke-width="2" stroke-dasharray="6 6"/>`,
+      )
+    }
+    for (const point of chart.points) {
+      parts.push(`<circle cx="${round1(sx(point.x))}" cy="${round1(sy(point.y))}" r="6" fill="${hexOf('claude')}" fill-opacity="0.85"/>`)
+    }
+    below(box.left, fmt(x0), 'start')
+    below(box.right, fmt(x1), 'end')
+    if (chart.xLabel !== undefined) below(box.left + plotW / 2, `${chart.xLabel} →`)
+    if (chart.yLabel !== undefined) text(box.left, box.top - 16, `↑ ${chart.yLabel}`, `font-size="14" fill="#8a8d93"`)
+  } else if (chart.kind === 'line') {
+    const all = chart.series.flatMap(series => series.values)
+    ;[low, high] = [Math.min(...all), Math.max(...all)]
+    ticks()
+    const count = Math.max(...chart.series.map(series => series.values.length))
+    const sx = (index: number): number => box.left + 12 + (index / Math.max(1, count - 1)) * (plotW - 24)
+    const sy = (value: number): number => box.top + (1 - (value - low) / (high - low || 1)) * plotH
+    parts.push('<defs>')
+    chart.series.forEach((_, at) => {
+      parts.push(
+        `<linearGradient id="fill${at}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${hexOf(tint(at))}" stop-opacity="${chart.series.length > 1 ? 0.14 : 0.3}"/><stop offset="1" stop-color="${hexOf(tint(at))}" stop-opacity="0"/></linearGradient>`,
+      )
+    })
+    parts.push('</defs>')
+    chart.series.forEach((series, at) => {
+      const points = series.values.map((value, index) => `${round1(sx(index))},${round1(sy(value))}`)
+      const first = series.values.length > 0 ? sx(0) : box.left
+      const last = sx(series.values.length - 1)
+      parts.push(`<polygon points="${round1(first)},${box.bottom} ${points.join(' ')} ${round1(last)},${box.bottom}" fill="url(#fill${at})"/>`)
+      parts.push(`<polyline points="${points.join(' ')}" fill="none" stroke="${hexOf(tint(at))}" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>`)
+      series.values.forEach((value, index) => {
+        parts.push(`<circle cx="${round1(sx(index))}" cy="${round1(sy(value))}" r="6" fill="${hexOf(tint(at))}"/>`)
+        parts.push(`<circle cx="${round1(sx(index))}" cy="${round1(sy(value))}" r="2.6" fill="#17191d"/>`)
+      })
+    })
+    const every = Math.max(1, Math.ceil(count / 12))
+    for (let index = 0; index < count; index += every) below(sx(index), labelAt(chart, index))
+  } else {
+    const count = Math.max(...chart.series.map(series => series.values.length))
+    high = Math.max(1e-9, ...chart.series.flatMap(series => series.values))
+    low = 0
+    ticks()
+    const group = plotW / count
+    const gap = Math.max(3, group * (chart.kind === 'histogram' ? 0.08 : 0.3))
+    const each = (group - gap) / chart.series.length
+    chart.series.forEach((series, at) => {
+      series.values.forEach((value, index) => {
+        const h = (Math.max(0, value) / high) * plotH
+        const x = box.left + index * group + gap / 2 + at * each
+        const y = box.bottom - h
+        const r = Math.min(6, each / 3, h)
+        parts.push(
+          `<path d="M${round1(x)},${box.bottom} V${round1(y + r)} Q${round1(x)},${round1(y)} ${round1(x + r)},${round1(y)} H${round1(x + each - 1 - r)} Q${round1(x + each - 1)},${round1(y)} ${round1(x + each - 1)},${round1(y + r)} V${box.bottom} Z" fill="${hexOf(tint(at))}"/>`,
+        )
+        if (chart.series.length === 1 && count <= 14 && value !== 0) {
+          text(x + (each - 1) / 2, y - 8, fmt(value), `font-size="13" fill="#c8cad0" text-anchor="middle"`)
+        }
+      })
+    })
+    if (chart.edges) {
+      below(box.left, `${chart.edges[0]}${chart.unit}`, 'start')
+      below(box.right, `${chart.edges[1]}${chart.unit}`, 'end')
+    } else {
+      const every = Math.max(1, Math.ceil(count / 14))
+      for (let index = 0; index < count; index += every) below(box.left + (index + 0.5) * group, labelAt(chart, index))
+    }
+  }
+
+  let x = 32
+  legendNames.forEach((name, at) => {
+    parts.push(`<rect x="${x}" y="${height - 42}" width="14" height="14" rx="3" fill="${hexOf(tint(at))}"/>`)
+    text(x + 22, height - 30, name, `font-size="15" fill="#c8cad0"`)
+    x += 44 + name.length * 15
+  })
+
+  return {
+    svg: `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" font-family="${FONT}">\n${parts.join('\n')}\n</svg>\n`,
+    width,
+    height,
+  }
+}
+
+// Runs a command, answering whether it ran and exited 0; one that cannot start
+// (not installed) is a no.
+const runs = async ($: any, argv: string[]): Promise<boolean> => {
+  try {
+    const done = await $.process.run(argv, { timeoutMs: 20_000 })
+    return done.exitCode === 0
+  } catch {
+    return false
+  }
+}
+
+const toPng = async ($: any, svgPath: string, pngPath: string, width: number, height: number): Promise<boolean> => {
+  for (const bin of ['rsvg-convert', '/opt/homebrew/bin/rsvg-convert', '/usr/local/bin/rsvg-convert', '/usr/bin/rsvg-convert']) {
+    if (await runs($, [bin, '-z', '2', '-o', pngPath, svgPath])) return true
+  }
+  // macOS without rsvg-convert: Quick Look renders the SVG into a square
+  // thumbnail, picture at the top, and sips cuts it back to the chart's shape.
+  const dir = svgPath.slice(0, svgPath.lastIndexOf('/'))
+  const thumb = `${svgPath}.png`
+  if (await runs($, ['qlmanage', '-t', '-s', String(width * 2), '-o', dir, svgPath])) {
+    const isCut = await runs($, ['sips', '-c', String(height * 2), String(width * 2), '--cropOffset', '0', '0', thumb, '--out', pngPath])
+    await runs($, ['rm', '-f', thumb])
+    return isCut
+  }
+  return false
+}
+
+const toClipboard = async ($: any, pngPath: string): Promise<boolean> =>
+  (await runs($, ['osascript', '-e', `set the clipboard to (read (POSIX file "${pngPath}") as «class PNGf»)`])) ||
+  (await runs($, ['sh', '-c', 'wl-copy --type image/png < "$1"', 'sh', pngPath])) ||
+  (await runs($, ['xclip', '-selection', 'clipboard', '-t', 'image/png', '-i', pngPath]))
+
+const stampOf = (date: Date): string => {
+  const two = (n: number): string => String(n).padStart(2, '0')
+  return `${date.getFullYear()}${two(date.getMonth() + 1)}${two(date.getDate())}-${two(date.getHours())}${two(date.getMinutes())}${two(date.getSeconds())}`
+}
+
+const exportSvg = async ($: any, drawn: { svg: string; width: number; height: number }, title: string, isCopy: boolean): Promise<void> => {
+  try {
+    const home: string = (await $.env.get('HOME')) ?? ''
+    const shown = (path: string): string => (home !== '' && path.startsWith(home) ? `~${path.slice(home.length)}` : path)
+    // A name a shell or AppleScript string takes as it is: no quotes, slashes or controls.
+    const slug =
+      title
+        .replace(/[\\/:*?"'<>|`$\u0000-\u001f]/g, '')
+        .replace(/\s+/g, '-')
+        .slice(0, 60) || 'chart'
+    const base = `${home}/Downloads/sketch/${slug}-${stampOf(new Date())}`
+    await $.fs.write(`${base}.svg`, drawn.svg)
+    const hasPng = await toPng($, `${base}.svg`, `${base}.png`, drawn.width, drawn.height)
+    if (!hasPng) {
+      $.ui.toast(`Saved ${shown(base)}.svg (no SVG-to-PNG converter found: install librsvg for PNG)`, { timeoutMs: 8000 })
+      return
+    }
+    if (!isCopy) {
+      $.ui.toast(`Saved ${shown(base)}.png (and .svg)`, { timeoutMs: 6000 })
+      return
+    }
+    const isCopied = await toClipboard($, `${base}.png`)
+    $.ui.toast(
+      isCopied ? `Image copied · also saved ${shown(base)}.png` : `Could not reach the clipboard · saved ${shown(base)}.png`,
+      { timeoutMs: 6000 },
+    )
+  } catch (error) {
+    $.ui.toast(`Could not save the picture: ${error instanceof Error ? error.message : String(error)}`, { timeoutMs: 8000 })
+  }
+}
+
+// ---------------------------------------------------------------- card export
+// Every card can be copied or saved as a picture. A picture chart is drawn
+// again from its numbers (chartSvg); every other card is laid out here as the
+// terminal lays it out, cell by cell, and painted as SVG: lines and corners as
+// strokes, so they join without seams, and the rest as text.
+
+type PaintCell = { ch: string; w: number; fg?: string; bold?: boolean; dim?: boolean }
+type PaintLine = PaintCell[]
+type PaintBlock = { lines: PaintLine[]; width: number }
+
+const paintCells = (text: string, style: Omit<PaintCell, 'ch' | 'w'>): PaintLine =>
+  [...text].filter(ch => cellsOf(ch) > 0).map(ch => ({ ch, w: cellsOf(ch), ...style }))
+const lineWidth = (line: PaintLine): number => line.reduce((sum, cell) => sum + cell.w, 0)
+const blankCells = (count: number): PaintLine => Array.from({ length: Math.max(0, count) }, () => ({ ch: ' ', w: 1 }))
+const padCells = (line: PaintLine, width: number): PaintLine => [...line, ...blankCells(width - lineWidth(line))]
+
+const wrapCells = (line: PaintLine, width: number): PaintLine[] => {
+  if (width <= 0) return [line]
+  const out: PaintLine[] = []
+  let rest = line
+  while (lineWidth(rest) > width) {
+    let used = 0
+    let cut = 0
+    let space = -1
+    while (cut < rest.length && used + (rest[cut]?.w ?? 1) <= width) {
+      if (rest[cut]?.ch === ' ') space = cut
+      used += rest[cut]?.w ?? 1
+      cut++
+    }
+    const at = space > 0 && cut < rest.length ? space : Math.max(1, cut)
+    out.push(rest.slice(0, at))
+    rest = rest.slice(at)
+    while (rest[0]?.ch === ' ') rest = rest.slice(1)
+  }
+  out.push(rest)
+  return out
+}
+
+const cutCells = (line: PaintLine, width: number): PaintLine => {
+  if (lineWidth(line) <= width) return line
+  const out: PaintLine = []
+  let used = 0
+  for (const cell of line) {
+    if (used + cell.w > width - 1) break
+    out.push(cell)
+    used += cell.w
+  }
+  return [...out, { ...(out[out.length - 1] ?? {}), ch: '…', w: 1 }]
+}
+
+// A Text's runs: its strings in its own style, nested Texts in theirs.
+const runsOf = (node: any, inherited: Omit<PaintCell, 'ch' | 'w'>): PaintLine => {
+  const props = node?.props ?? {}
+  const style = {
+    fg: props.color ?? inherited.fg,
+    bold: props.bold ?? inherited.bold,
+    dim: props.dimColor ?? inherited.dim,
+  }
+  return (node?.children ?? []).flatMap((child: any) =>
+    typeof child === 'string' || typeof child === 'number' ? paintCells(String(child), style) : runsOf(child, style),
+  )
+}
+
+const FRAME_GLYPHS: Record<string, string> = { round: '╭╮╰╯─│', single: '┌┐└┘─│', bold: '┏┓┗┛━┃', double: '╔╗╚╝═║' }
+
+const layoutTree = (node: any, avail: number, stretch?: number): PaintBlock => {
+  if (node === undefined || node === null || node === false || node === true) return { lines: [], width: 0 }
+  if (typeof node === 'string' || typeof node === 'number') return layoutTree({ type: 'Text', children: [String(node)] }, avail)
+  if (Array.isArray(node)) return layoutTree({ type: 'Box', props: { flexDirection: 'column' }, children: node }, avail)
+  const p = node.props ?? {}
+  if (p.display === 'none' || p.position === 'absolute') return { lines: [], width: 0 }
+  if (node.type === 'Button') return layoutTree({ type: 'Box', props: { flexDirection: 'row' }, children: node.children ?? [p.label ?? ''] }, avail, stretch)
+  if (node.type === 'Image') {
+    const columns = Number(p.columns ?? 1)
+    return { lines: Array.from({ length: Number(p.rows ?? 1) }, () => blankCells(columns)), width: columns }
+  }
+  if (node.type === 'Text') {
+    const line = runsOf(node, {})
+    const lines = p.wrap === 'wrap' ? wrapCells(line, avail) : [cutCells(line, Math.max(1, avail))]
+    return { lines, width: Math.max(0, ...lines.map(lineWidth)) }
+  }
+  const children = (node.children ?? []).filter((child: any) => child !== undefined && child !== null && child !== false && child !== true)
+  const frame = typeof p.borderStyle === 'string' ? [...(FRAME_GLYPHS[p.borderStyle] ?? FRAME_GLYPHS.single ?? '')] : undefined
+  const border = frame ? 1 : 0
+  const padL = (p.paddingLeft ?? p.paddingX ?? 0) + border
+  const padR = (p.paddingRight ?? p.paddingX ?? 0) + border
+  const outer = typeof p.width === 'number' ? p.width : avail
+  const inner = Math.max(0, outer - padL - padR)
+  let lines: PaintLine[] = []
+  let width = 0
+  if (p.flexDirection === 'column') {
+    children.forEach((child: any, index: number) => {
+      const block = layoutTree(child, inner)
+      const lead = child?.props?.marginLeft ?? 0
+      for (let i = 0; i < (child?.props?.marginTop ?? 0) + (index > 0 ? (p.rowGap ?? 0) : 0); i++) lines.push([])
+      lines.push(...block.lines.map(line => [...blankCells(lead), ...line]))
+      width = Math.max(width, block.width + lead)
+    })
+  } else {
+    const gap = p.columnGap ?? 0
+    const rows: { block: PaintBlock; child: any; room: number }[][] = [[]]
+    let used = 0
+    for (const child of children) {
+      let room = Math.max(1, inner - used - (used > 0 ? gap : 0))
+      const lead = child?.props?.marginLeft ?? 0
+      if (p.flexWrap === 'wrap' && used > 0 && used + gap + layoutTree(child, inner).width + lead > inner) {
+        rows.push([])
+        used = 0
+        room = inner
+      }
+      const block = layoutTree(child, room)
+      const row = rows[rows.length - 1] ?? []
+      row.push({ block: { lines: block.lines.map(line => [...blankCells(lead), ...line]), width: block.width + lead }, child, room })
+      used += block.width + lead + (row.length > 1 ? gap : 0)
+    }
+    rows.forEach((row, at) => {
+      const tall = Math.max(0, ...row.map(one => one.block.lines.length))
+      for (const one of row) {
+        if (one.child?.props?.borderStyle && one.block.lines.length < tall) {
+          const again = layoutTree(one.child, one.room, tall)
+          const lead = one.child.props.marginLeft ?? 0
+          one.block = { lines: again.lines.map(line => [...blankCells(lead), ...line]), width: again.width + lead }
+        }
+      }
+      const total = row.reduce((sum, one) => sum + one.block.width, 0) + gap * Math.max(0, row.length - 1)
+      let lead = 0
+      let between = gap
+      if (p.justifyContent === 'center') lead = Math.max(0, (inner - total) >> 1)
+      if (p.justifyContent === 'flex-end') lead = Math.max(0, inner - total)
+      if (p.justifyContent === 'space-between' && row.length > 1) between = gap + Math.max(0, Math.floor((inner - total) / (row.length - 1)))
+      if (at > 0) for (let i = 0; i < (p.rowGap ?? 0); i++) lines.push([])
+      for (let i = 0; i < tall; i++) {
+        const line: PaintLine = [...blankCells(lead)]
+        row.forEach((one, index) => {
+          if (index > 0) line.push(...blankCells(between))
+          line.push(...padCells(one.block.lines[i] ?? [], one.block.width))
+        })
+        lines.push(line)
+      }
+      width = Math.max(width, total + lead)
+    })
+  }
+  const boxed = typeof p.width === 'number' ? p.width - padL - padR : width
+  if (frame && stretch !== undefined) while (lines.length < stretch - 2) lines.push([])
+  lines = lines.map(line => [...blankCells(padL - border), ...padCells(line, boxed), ...blankCells(padR - border)])
+  if (frame) {
+    const span = boxed + padL + padR - 2
+    const style = { fg: p.borderColor, dim: p.borderDimColor }
+    lines = [
+      paintCells((frame[0] ?? '') + (frame[4] ?? '').repeat(span) + (frame[1] ?? ''), style),
+      ...lines.map(line => [...paintCells(frame[5] ?? '', style), ...padCells(line, span), ...paintCells(frame[5] ?? '', style)]),
+      paintCells((frame[2] ?? '') + (frame[4] ?? '').repeat(span) + (frame[3] ?? ''), style),
+    ]
+  }
+  return { lines, width: typeof p.width === 'number' ? p.width : boxed + padL + padR }
+}
+
+// --- painting the laid-out cells
+
+const SVG_BG = [23, 25, 29] as const
+const PAINT_RGB: Record<string, [number, number, number]> = {
+  ...RGB,
+  text: [255, 255, 255],
+  subtle: [80, 80, 80],
+  inverseText: [0, 0, 0],
+  permission: [177, 185, 249],
+  ide: [71, 130, 200],
+}
+const cellHex = (cell: PaintCell): string => {
+  const base = cell.fg !== undefined ? (PAINT_RGB[cell.fg] ?? [210, 212, 217]) : [210, 212, 217]
+  const rgb = cell.dim ? base.map((part, at) => Math.round(part + ((SVG_BG[at] ?? 0) - part) * 0.45)) : base
+  return `#${rgb.map(part => part.toString(16).padStart(2, '0')).join('')}`
+}
+
+const SVG_CW = 10
+const SVG_CH = 20
+// A monospace glyph is 0.6 em wide: at this size it fills its 10-pixel cell.
+const MONO_SIZE = 16.6
+const MONO = "Menlo, 'SF Mono', 'JetBrains Mono', Consolas, 'PingFang TC', 'Noto Sans Mono CJK TC', monospace"
+
+const LIGHT_SIDES: Record<string, string> = { '─': 'LR', '│': 'UD', '┌': 'DR', '┐': 'DL', '└': 'UR', '┘': 'UL', '├': 'UDR', '┤': 'UDL', '┬': 'DLR', '┴': 'ULR', '┼': 'UDLR' }
+const HEAVY_SIDES: Record<string, string> = { '━': 'LR', '┃': 'UD', '┏': 'DR', '┓': 'DL', '┗': 'UR', '┛': 'UL', '┣': 'UDR', '┫': 'UDL', '┳': 'DLR', '┻': 'ULR', '╋': 'UDLR' }
+const ROUND_CORNERS: Record<string, [number, number]> = { '╭': [1, 1], '╮': [-1, 1], '╰': [1, -1], '╯': [-1, -1] }
+const LEFT_EIGHTHS: Record<string, number> = { '▉': 7, '▊': 6, '▋': 5, '▌': 4, '▍': 3, '▎': 2, '▏': 1 }
+const LOW_EIGHTHS: Record<string, number> = { '▁': 1, '▂': 2, '▃': 3, '▄': 4, '▅': 5, '▆': 6, '▇': 7 }
+const SHADE_ALPHA: Record<string, number> = { '░': 0.28, '▒': 0.5, '▓': 0.75 }
+
+const cardSvg = (title: string, body: any, room: number): { svg: string; width: number; height: number } => {
+  const block = layoutTree(body, room)
+  const lines = block.lines
+  const columns = Math.max(1, block.width, ...lines.map(lineWidth))
+  const left = 28
+  const top = 64
+  const width = left * 2 + columns * SVG_CW
+  const height = top + lines.length * SVG_CH + 24
+  const strokes = new Map<string, string[]>()
+  const stroke = (color: string, weight: number, d: string): void => {
+    const key = `${color}|${weight}`
+    strokes.set(key, [...(strokes.get(key) ?? []), d])
+  }
+  const shapes: string[] = []
+  const texts: string[] = []
+  lines.forEach((line, row) => {
+    let col = 0
+    let run: { x: number[]; text: string; color: string; bold: boolean } | undefined
+    const flush = (): void => {
+      if (!run) return
+      texts.push(`<text x="${run.x.join(' ')}" y="${round1(top + row * SVG_CH + SVG_CH * 0.74)}" fill="${run.color}"${run.bold ? ' font-weight="700"' : ''}>${xml(run.text)}</text>`)
+      run = undefined
+    }
+    for (const cell of line) {
+      const x = left + col * SVG_CW
+      const y = top + row * SVG_CH
+      const cx = x + SVG_CW / 2
+      const cy = y + SVG_CH / 2
+      col += cell.w
+      const color = cellHex(cell)
+      const ch = cell.ch
+      const sides = LIGHT_SIDES[ch] ?? HEAVY_SIDES[ch]
+      const isShape =
+        sides !== undefined ||
+        ROUND_CORNERS[ch] !== undefined ||
+        '═║╔╗╚╝╤╧┄╌┆╱╲█▼▲▶◀●○◆■•·'.includes(ch) ||
+        LEFT_EIGHTHS[ch] !== undefined ||
+        LOW_EIGHTHS[ch] !== undefined ||
+        SHADE_ALPHA[ch] !== undefined
+      if (ch === ' ' || isShape) flush()
+      if (ch === ' ') continue
+      if (sides !== undefined) {
+        const weight = HEAVY_SIDES[ch] !== undefined ? 3.2 : 1.4
+        const parts: string[] = []
+        if (sides.includes('L')) parts.push(`M${x},${cy}H${cx}`)
+        if (sides.includes('R')) parts.push(`M${cx},${cy}H${x + SVG_CW}`)
+        if (sides.includes('U')) parts.push(`M${cx},${y}V${cy}`)
+        if (sides.includes('D')) parts.push(`M${cx},${cy}V${y + SVG_CH}`)
+        stroke(color, weight, parts.join(''))
+      } else if (ROUND_CORNERS[ch] !== undefined) {
+        const [sx, sy] = ROUND_CORNERS[ch] ?? [1, 1]
+        const r = SVG_CW / 2
+        const edgeY = sy > 0 ? y + SVG_CH : y
+        const edgeX = sx > 0 ? x + SVG_CW : x
+        stroke(color, 1.4, `M${cx},${edgeY}V${cy + sy * r}Q${cx},${cy} ${cx + sx * r},${cy}H${edgeX}`)
+      } else if ('═╤╧'.includes(ch)) {
+        stroke(color, 1.2, `M${x},${cy - 2.5}H${x + SVG_CW}M${x},${cy + 2.5}H${x + SVG_CW}`)
+        if (ch === '╤') stroke(color, 1.2, `M${cx},${cy + 2.5}V${y + SVG_CH}`)
+        if (ch === '╧') stroke(color, 1.2, `M${cx},${y}V${cy - 2.5}`)
+      } else if (ch === '║') {
+        stroke(color, 1.2, `M${cx - 2.5},${y}V${y + SVG_CH}M${cx + 2.5},${y}V${y + SVG_CH}`)
+      } else if ('╔╗╚╝'.includes(ch)) {
+        const sx = '╔╚'.includes(ch) ? 1 : -1
+        const sy = '╔╗'.includes(ch) ? 1 : -1
+        const toX = sx > 0 ? x + SVG_CW : x
+        const toY = sy > 0 ? y + SVG_CH : y
+        for (const k of [-2.5, 2.5]) stroke(color, 1.2, `M${toX},${cy + k * sy}H${cx + k * sx}V${toY}`)
+      } else if ('┄╌'.includes(ch)) {
+        stroke(color, 1.4, `M${x + 1},${cy}h2.5M${x + 4.2},${cy}h2.5M${x + 7.4},${cy}h2`)
+      } else if (ch === '┆') {
+        stroke(color, 1.4, `M${cx},${y + 2}v4M${cx},${y + 8}v4M${cx},${y + 14}v4`)
+      } else if (ch === '╱') {
+        stroke(color, 1.4, `M${x},${y + SVG_CH}L${x + SVG_CW},${y}`)
+      } else if (ch === '╲') {
+        stroke(color, 1.4, `M${x},${y}L${x + SVG_CW},${y + SVG_CH}`)
+      } else if (ch === '█') {
+        shapes.push(`<rect x="${x}" y="${y}" width="${SVG_CW * cell.w + 0.3}" height="${SVG_CH + 0.3}" fill="${color}"/>`)
+      } else if (LEFT_EIGHTHS[ch] !== undefined) {
+        shapes.push(`<rect x="${x}" y="${y}" width="${round1((SVG_CW * (LEFT_EIGHTHS[ch] ?? 0)) / 8)}" height="${SVG_CH + 0.3}" fill="${color}"/>`)
+      } else if (LOW_EIGHTHS[ch] !== undefined) {
+        const h = (SVG_CH * (LOW_EIGHTHS[ch] ?? 0)) / 8
+        shapes.push(`<rect x="${x}" y="${round1(y + SVG_CH - h)}" width="${SVG_CW + 0.3}" height="${round1(h)}" fill="${color}"/>`)
+      } else if (SHADE_ALPHA[ch] !== undefined) {
+        shapes.push(`<rect x="${x}" y="${y}" width="${SVG_CW + 0.3}" height="${SVG_CH + 0.3}" fill="${color}" fill-opacity="${SHADE_ALPHA[ch]}"/>`)
+      } else if (ch === '▼') {
+        shapes.push(`<path d="M${cx - 5},${cy - 3}H${cx + 5}L${cx},${cy + 5}Z" fill="${color}"/>`)
+      } else if (ch === '▲') {
+        shapes.push(`<path d="M${cx - 5},${cy + 3}H${cx + 5}L${cx},${cy - 5}Z" fill="${color}"/>`)
+      } else if (ch === '▶') {
+        shapes.push(`<path d="M${x + 2},${cy - 5}V${cy + 5}L${x + SVG_CW - 1},${cy}Z" fill="${color}"/>`)
+      } else if (ch === '◀') {
+        shapes.push(`<path d="M${x + SVG_CW - 2},${cy - 5}V${cy + 5}L${x + 1},${cy}Z" fill="${color}"/>`)
+      } else if (ch === '●') {
+        shapes.push(`<circle cx="${cx}" cy="${cy}" r="4.2" fill="${color}"/>`)
+      } else if (ch === '○') {
+        shapes.push(`<circle cx="${cx}" cy="${cy}" r="3.8" fill="none" stroke="${color}" stroke-width="1.4"/>`)
+      } else if (ch === '◆') {
+        shapes.push(`<path d="M${cx},${cy - 5.5}L${cx + 5},${cy}L${cx},${cy + 5.5}L${cx - 5},${cy}Z" fill="${color}"/>`)
+      } else if (ch === '■') {
+        shapes.push(`<rect x="${cx - 4}" y="${cy - 4}" width="8" height="8" rx="1.5" fill="${color}"/>`)
+      } else if (ch === '•') {
+        shapes.push(`<circle cx="${cx}" cy="${cy}" r="2.4" fill="${color}"/>`)
+      } else if (ch === '·') {
+        shapes.push(`<circle cx="${cx}" cy="${cy}" r="1.4" fill="${color}"/>`)
+      } else {
+        // Text: one run per style, every glyph placed at its own cell, so wide
+        // characters keep their two columns whatever the font. Placed from the
+        // left (a renderer may center a whole run, not each glyph): a monospace
+        // glyph is about 0.6 em, a wide one 1 em, so each is moved in by half
+        // of what its cells leave over.
+        const at = round1(x + (cell.w === 2 ? (SVG_CW * 2 - MONO_SIZE) / 2 : (SVG_CW - MONO_SIZE * 0.6) / 2))
+        if (run && run.color === color && run.bold === Boolean(cell.bold)) {
+          run.x.push(Number(at))
+          run.text += ch
+        } else {
+          flush()
+          run = { x: [Number(at)], text: ch, color, bold: Boolean(cell.bold) }
+        }
+      }
+    }
+    flush()
+  })
+  const strokePaths = [...strokes.entries()].map(([key, ds]) => {
+    const [color, weight] = key.split('|')
+    return `<path d="${ds.join('')}" fill="none" stroke="${color}" stroke-width="${weight}" stroke-linecap="square"/>`
+  })
+  return {
+    svg:
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n` +
+      `<rect width="${width}" height="${height}" rx="18" fill="#17191d"/>\n` +
+      `<text x="${left}" y="40" font-family="${FONT}" font-size="20" font-weight="600" fill="${hexOf('claude')}">${xml(`◆ ${title}`)}</text>\n` +
+      `${strokePaths.join('\n')}\n${shapes.join('\n')}\n` +
+      `<g font-family="${MONO}" font-size="${MONO_SIZE}">\n${texts.join('\n')}\n</g>\n</svg>\n`,
+    width,
+    height,
+  }
+}
+
+// The width the card's own body takes, so its buttons can sit at its right edge.
+const bodyWidth = (body: any, room: number): number => {
+  try {
+    return layoutTree(body, room).width
+  } catch {
+    return room
+  }
 }
 
 // ---------------------------------------------------------------- cards
@@ -3405,6 +4215,7 @@ const KINDS: Kind[] = [
     inputSchema: shape(
       {
         kind: { type: 'string', enum: [...CHART_KINDS] },
+        style: { type: 'string', enum: ['text', 'image'], description: 'image draws line, scatter, column and histogram plots as a real picture where the terminal shows images; text (default) everywhere' },
         title: text(),
         unit: text('ms, %, $: appended to values'),
         labels: list(text()),
@@ -3612,7 +4423,26 @@ export const register: Register = on => {
     // as not yet running, so the entrance is found by the call's id instead.
     const played = kind.isAnimated === true ? (entrances.get(String(e.props.tool_use_id)) ?? 1) : 1
 
-    return frameOf(ui, model.title, kind.draw(ui, model, roomOf(e.viewport?.columns), played))
+    const room = roomOf(e.viewport?.columns)
+    const body = kind.draw(ui, model, room, played)
+    if (ui.Button === undefined) return frameOf(ui, model.title, body)
+    // A picture chart is drawn again from its numbers; any other card as laid out.
+    const isPictureChart = kind.name === 'chart' && model.style === 'image' && IMAGE_KINDS.includes(model.kind)
+    const save = (isCopy: boolean): void => {
+      void exportSvg($, isPictureChart ? chartSvg(model) : cardSvg(model.title, body, room), model.title, isCopy)
+    }
+    const actions = (
+      <ui.Box flexDirection="row" columnGap={2}>
+        <ui.Button key={scopeOf('copy')} plain dimColor onPress={() => save(true)}>
+          ⧉ Copy image
+        </ui.Button>
+        <ui.Button key={scopeOf('save')} plain dimColor onPress={() => save(false)}>
+          ⤓ Save PNG
+        </ui.Button>
+      </ui.Box>
+    )
+    const titleWidth = widthOf(`◆ ${model.title}`) + 28
+    return frameOf(ui, model.title, body, actions, Math.min(room, Math.max(titleWidth, bodyWidth(body, room))))
   })
 
   // The result is written for the model; under a drawn card it is noise.

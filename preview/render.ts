@@ -79,7 +79,9 @@ const truncate = (line: Line, width: number): Line => {
 const BORDERS: Record<string, string> = { round: '╭╮╰╯─│', single: '┌┐└┘─│', bold: '┏┓┗┛━┃', double: '╔╗╚╝═║' }
 
 export const layout = (node: any, avail: number, stretch?: number): Block => {
-  const p = node.props
+  // A bare string in a Box is a Text, as Claude Code wraps it.
+  if (typeof node === 'string' || typeof node === 'number') return layout({ type: 'Text', props: {}, children: [String(node)] }, avail)
+  const p = node.props ?? {}
   if (node.props?.display === 'none') return { lines: [], width: 0 }
   if (node.type === 'Button') return layout({ type: 'Box', props: { flexDirection: 'row' }, children: node.children }, avail, stretch)
   if (node.type === 'Text') {
